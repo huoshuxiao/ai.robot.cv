@@ -43,7 +43,7 @@ jobbot doctor --ai-test
 export OPENAI_API_KEY=sk-...
 jobbot --ai online plan
 
-# 2) 首次扫码登录，登录态保存在 data/browser/boss
+# 2) 首次扫码登录（系统 Chromium），登录态保存在 data/browser/boss
 jobbot login
 
 # 3) 生成计划（只读）：搜索 → 评分 → 生成招呼语，不发送
@@ -75,7 +75,7 @@ jobbot run --yes
 | 命令 | 作用 |
 | --- | --- |
 | `jobbot doctor [--live] [--ai-test]` | 自检配置、简历、台账、浏览器、AI provider；`--live` 检查登录态，`--ai-test` 真实调用一次 AI 并报告延迟 |
-| `jobbot login` | 打开有头浏览器扫码登录，登录态持久化到本地 |
+| `jobbot login` | 用系统 Chromium 手工扫码登录（避开 BOSS 对 Playwright 登录页的 `about:blank` 拦截） |
 | `jobbot plan [--limit N]` | 搜索并生成投递计划（只读，不发送） |
 | `jobbot apply --plan <文件或 run_id> [--yes]` | 执行计划；默认逐条确认，`--yes` 全部发送 |
 | `jobbot run [--yes]` | `plan` + `apply` 一条命令 |
@@ -178,14 +178,32 @@ Prompt 中职位描述被包裹在 `<jd>...</jd>` 并明确标注为数据，防
 
 ## 6. BOSS 首次使用与维护
 
+BOSS 会检测 Playwright 并将登录页跳转到 `about:blank`。因此 `jobbot login` 不再用 Playwright 打开登录页，而是启动本机系统 Chromium：
+
+1. 运行 `jobbot login`，会弹出一个普通 Chromium 窗口；
+2. 手机扫码登录；若出现「安全验证」，在该窗口人工完成；
+3. 终端检测到登录 Cookie 后会提示成功，请关闭登录浏览器窗口，然后使用 6.1 的浏览器扩展路径（Playwright 搜索页会被 BOSS 跳空）。
+
 BOSS 的「投递」在本工具中实现为「立即沟通 + 发送打招呼」；简历以你在 BOSS 站内维护的在线简历为准，工具不会上传本地图片或伪造附件。
 
-1. `jobbot login` 打开浏览器，用手机扫码登录；登录态保存在 `data/browser/boss`，之后无需重复登录。
-2. 若 BOSS 先弹出「安全验证」，请在该浏览器窗口里人工完成验证；工具会等待登录态，不会尝试绕过。
-3. `jobbot plan` 搜索并生成计划。建议先看计划里的分数、理由、跳过统计与招呼语。
-4. `jobbot apply --plan <文件>` 逐条确认后发送；发送成功以聊天页出现对应消息气泡为准。
-5. 页面改版导致找不到元素时，工具会把截图与 HTML 存到 `data/debug/` 并以退出码 4 停止；修改 `config/selectors.boss.yaml` 即可适配，无需改代码。
-6. 遇到验证码、滑块或风控提示时立即停机，状态记为 `requires_action`，不会尝试绕过。请人工处理后再运行。
+### 6.1 浏览器扩展（真实 BOSS 路径）
+
+BOSS 同样会拦截 Playwright 的搜索页（跳 `about:blank`），真实投递由 `extension/` 在普通 Chromium 内完成：
+
+1. 启动本地 AI 桥：`jobbot bridge --port 8765`；
+2. 用普通 Chromium 加载扩展：
+
+```bash
+/snap/bin/chromium --user-data-dir="$PWD/data/browser/boss" \
+  --disable-extensions-except="$PWD/extension" \
+  --load-extension="$PWD/extension" \
+  "https://www.zhipin.com/web/geek/job?query=Java&city=101070200"
+```
+
+3. 在 BOSS 页面用扩展面板扫描/生成 AI 招呼语；发送时扩展选中会话、填入 contenteditable 编辑器并回车，确认 BOSS 气泡后下载结果；
+4. 注意：点击「立即沟通」本身会先发送 BOSS 默认招呼语，AI 招呼会作为后续消息发送。要避免两条消息，可先在 BOSS「设置招呼语」中把默认招呼改成 AI 版本。
+
+真实实测（2026-10-31）：本地 AI 生成的招呼语已发送给「杭州学天教育 / 后端JAVA开发工程师（Base杭州）」，BOSS 聊天页 23:24 显示「送达」。
 
 ## 7. 安全边界
 
@@ -201,9 +219,10 @@ BOSS 的「投递」在本工具中实现为「立即沟通 + 发送打招呼」
 
 ```text
 config/          config.yaml / profile.yaml / selectors.boss.yaml
-src/jobbot/      源码（CLI、匹配、AI、平台适配器、台账、报告）
+src/jobbot/      源码（CLI、匹配、AI、平台适配器、台账、报告、bridge）
+extension/       Chromium 扩展（BOSS 真实投递路径）
 examples/        离线演示职位数据
-tests/           105 个 pytest 用例（含 Playwright 浏览器级联调、AI HTTP 回环）
+tests/           110 个 pytest 用例（含 Playwright 浏览器级联调、AI HTTP 回环、登录 Cookie 检测）
 docs/            设计方案.md
 data/            运行时数据（已忽略）
   jobbot.sqlite3   投递台账（去重、状态、每日计数）
@@ -217,13 +236,17 @@ data/            运行时数据（已忽略）
 ## 9. 验证状态
 
 - 离线流水线：`jobbot demo` 实跑通过，选中 5 个职位，模拟投递 5 条，台账去重复核 `6/9`，日报生成。
-- 自动化测试：`python -m pytest` → **105 passed**。覆盖配置校验、薪资/经验解析、评分与排除词、台账去重与配额、招呼语校验与截断、AI 双协议/真实 HTTP 回环/探测/回退/重试/provider 默认开关与启停、`--ai` 切换、BOSS HTML 解析与登录/风控检测、计划限额、CLI 端到端（demo / run / apply / report）。
+- 自动化测试：`python -m pytest` → **110 passed**。覆盖配置校验、薪资/经验解析、评分与排除词、台账去重与配额、招呼语校验与截断、AI 双协议/真实 HTTP 回环/探测/回退/重试/provider 默认开关与启停、`--ai` 切换、登录 Cookie 检测、BOSS HTML 解析与登录/风控检测、计划限额、CLI 端到端（demo / run / apply / report）。
 - 默认策略实测：`jobbot doctor` → `local` 可用、`online` 显示「已在配置中关闭」；`jobbot --ai online doctor` → 选择 online 并临时启用（本机无 Key，显示未设置 Key）。
 - AI 本地实测：`jobbot doctor --ai-test` → 本地 `deepseek-r1:8b` 成功返回 `OK`（64.4–158.6 秒，随冷启动/缓存变化），测试后自动卸载；`plan --fixture --limit 1` → 生成计划且 `greeting_source: ai`（151.7 秒，招呼语 115 字）。
 - 本地评分实测（`budget=2048`、`ctx=6144`）：成功返回合法 JSON，`fit=96`，耗时 **500.7 秒**；默认仍关闭 `use_for_scoring`，避免每日计划耗时过长。
+- 全链路离线实测（fixture + 本地 AI 精排 + 招呼 + 投递 + 台账/日报）：1 条，规则分 96 / AI 分 96，`greeting_source: ai`，总耗时 **10 分 46 秒**，退出码 0；投递为 fixture 模拟，不是真实 BOSS。
 - AI 在线：本机未设置真实 `OPENAI_API_KEY`，未向外部服务发请求；用本地 HTTP mock 验证了 `/chat/completions` 请求体与 `Bearer` 鉴权，失败回退由单测覆盖。
 - 适配器浏览器级联调：用本地合成站点驱动真实 Playwright + 系统 Chromium，验证「搜索 → 解析职位卡 → 拉详情 → 点击立即沟通 → 填招呼语 → 回车发送 → 消息气泡确认」整条链路。
-- 真实 BOSS 投递：需要你的账号扫码登录后才能验证。代码按当前页面结构编写选择器，首次使用请先 `jobbot plan` 审阅；若页面改版，按 `data/debug/` 现场更新 `selectors.boss.yaml`。本仓库不包含账号凭证，也不会自动绕过平台验证。
+- 真实 BOSS 链路（2026-10-31）：普通 Chromium 登录 → BOSS 聊天列表选中「杭州学天教育」→ `jobbot bridge` 用本地 `deepseek-r1:8b` 生成 AI 招呼语（source=ai，118.7 秒）→ 扩展填入并回车 → BOSS 聊天页 23:24 显示 AI 气泡「送达」；主台账/日报各 1 条。
+  - 证据：`data/e2e-live/real-send-verified.png`、`data/e2e-live/verification.json`、`data/reports/jobbot-report-2026-10-31-all.md`
+  - 边界：登录与职位选择为人工操作；Playwright 搜索路径被 BOSS 拦截，真实发送由浏览器扩展完成。扩展首次结果 JSON 的 job/greeting 为空（状态未赋值），代码已修复，本次以聊天页气泡与列表为准补记台账。
+  - 注意：同一会话此前 22:56 已发送过一条 BOSS 默认招呼语；23:24 发送的是 AI 招呼语。
 - 真实浏览器冒烟测试（本机）：系统 Chromium 156 可由 Playwright 启动并访问 BOSS 首页；新开的无登录态会话被 BOSS 重定向到 `/web/passport/zp/verify.html` 安全验证页，`check_login` 正确返回未登录并提示人工登录，工具没有硬闯验证。真实搜索与发送必须在完成人工登录后验证。
 
 ## 10. 常见问题
@@ -231,7 +254,8 @@ data/            运行时数据（已忽略）
 | 现象 | 处理 |
 | --- | --- |
 | `浏览器启动失败` | 运行 `playwright install chromium`；或 `export JOBBOT_CHROMIUM=/usr/bin/chromium` 指向本机浏览器。本机 Ubuntu 20.04 会自动使用 `/snap/bin/chromium` |
-| 登录时出现「安全验证」 | 在 `jobbot login` 打开的浏览器里人工完成验证后再扫码；首次登录不要用无头模式 |
+| 登录页跳 `about:blank` | BOSS 拦截了 Playwright。当前 `jobbot login` 已改为系统 Chromium；若仍出现，关闭窗口后重跑 `jobbot login` |
+| 登录时出现「安全验证」 | 在 `jobbot login` 打开的浏览器里人工完成验证后再扫码 |
 | `登录态失效` | 重新 `jobbot login` |
 | 搜索无结果 | 检查关键词、城市码、账号是否被限制；先用浏览器手动搜索确认 |
 | 找不到「立即沟通」按钮 | 页面改版，按 `data/debug/` 更新 `config/selectors.boss.yaml` |

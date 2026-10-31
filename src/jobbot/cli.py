@@ -5,7 +5,10 @@ import json
 import logging
 import os
 import random
+import sqlite3
+import subprocess
 import sys
+import time
 from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
@@ -18,6 +21,7 @@ from .adapters import (
     RiskControlDetected,
     SelectorError,
 )
+from .adapters.boss import LOGIN_COOKIES, load_selectors
 from .ai import AIClient
 from .browser import find_system_chromium
 from .config import Config, ConfigError, Profile, load_config, load_profile
@@ -331,20 +335,74 @@ def cmd_doctor(args, cfg: Config, profile: Profile) -> int:
     return EXIT_OK if browser_ok else EXIT_CONFIG
 
 
+def _login_cookie_present(profile_dir: Path) -> bool:
+    databases = (
+        profile_dir / "Default" / "Cookies",
+        profile_dir / "Default" / "Network" / "Cookies",
+    )
+    for db in databases:
+        if not db.exists():
+            continue
+        try:
+            conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2)
+            try:
+                rows = conn.execute(
+                    "SELECT name FROM cookies WHERE host_key LIKE '%zhipin%'"
+                ).fetchall()
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            continue
+        if {row[0] for row in rows} & set(LOGIN_COOKIES):
+            return True
+    return False
+
+
+def _manual_login(platform, timeout: int) -> int:
+    profile_dir = platform.user_data_dir
+    if profile_dir is None:
+        print("boss 平台缺少 user_data_dir 配置", file=sys.stderr)
+        return EXIT_CONFIG
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    if _login_cookie_present(profile_dir):
+        print("当前已是登录状态，无需重复登录。")
+        return EXIT_OK
+
+    login_url = "https://www.zhipin.com/web/user/?ka=header-login"
+    if platform.selectors:
+        login_url = load_selectors(platform.selectors).get("login_url", login_url)
+    executable = os.environ.get("JOBBOT_CHROMIUM", "").strip() or find_system_chromium()
+    if not executable:
+        print("未找到 Chromium/Chrome，请设置 JOBBOT_CHROMIUM", file=sys.stderr)
+        return EXIT_CONFIG
+
+    command = [
+        executable,
+        f"--user-data-dir={profile_dir}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        login_url,
+    ]
+    print("已用系统 Chromium 打开 BOSS 登录页（不经 Playwright）。")
+    print("请扫码登录；若出现安全验证请人工完成。登录成功后关闭浏览器窗口。")
+    subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _login_cookie_present(profile_dir):
+            print("登录成功，登录态已保存。请关闭登录浏览器后再运行 jobbot plan。")
+            return EXIT_OK
+        time.sleep(2)
+    print(f"登录超时（{timeout}s）：未检测到登录 Cookie。", file=sys.stderr)
+    return EXIT_LOGIN
+
+
 def cmd_login(args, cfg: Config, profile: Profile) -> int:
     pc = cfg.platform(args.platform)
     if pc.name != "boss":
         print(f"平台 {pc.name} 暂不支持扫码登录。", file=sys.stderr)
         return EXIT_CONFIG
-    adapter = _make_adapter(cfg, profile, pc.name, headless=False)
-    try:
-        if adapter.check_login():
-            print("当前已是登录状态，无需重复登录。")
-            return EXIT_OK
-        adapter.login(args.timeout)
-        return EXIT_OK
-    finally:
-        adapter.close()
+    return _manual_login(pc, args.timeout)
 
 
 def _prepare_ai(cfg: Config, profile: Profile, logger: logging.Logger) -> AIClient:
@@ -496,6 +554,13 @@ def cmd_demo(args, cfg: Config, profile: Profile) -> int:
         adapter.close()
 
 
+def cmd_bridge(args, cfg: Config, profile: Profile) -> int:
+    from .bridge import serve_bridge
+
+    serve_bridge(cfg, profile, args.port)
+    return EXIT_OK
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="jobbot",
@@ -518,9 +583,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ai-test", action="store_true", help="实际调用一次 AI 并报告延迟")
     p.set_defaults(func=cmd_doctor)
 
-    p = sub.add_parser("login", help="扫码登录并持久化登录态")
+    p = sub.add_parser("login", help="用系统 Chromium 手工扫码登录")
     p.add_argument("--platform", default=None)
-    p.add_argument("--timeout", type=int, default=180, help="等待扫码秒数")
+    p.add_argument("--timeout", type=int, default=300, help="等待扫码秒数")
     p.set_defaults(func=cmd_login)
 
     p = sub.add_parser("plan", help="生成投递计划（不发送）")
@@ -548,6 +613,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("demo", help="离线跑通全流水线（不联网）")
     p.set_defaults(func=cmd_demo)
+
+    p = sub.add_parser("bridge", help="启动浏览器扩展的本地 AI 桥")
+    p.add_argument("--port", type=int, default=8765)
+    p.set_defaults(func=cmd_bridge)
     return parser
 
 

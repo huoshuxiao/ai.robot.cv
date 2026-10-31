@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "jobbot assistant",
+  "version": "0.2.0",
+  "description": "BOSS real-browser assistant for jobbot",
+  "permissions": ["storage", "downloads"],
+  "host_permissions": [
+    "https://www.zhipin.com/*",
+    "http://127.0.0.1:11434/*",
+    "http://127.0.0.1:8765/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.zhipin.com/web/geek/*"],
+      "js": ["profile.js", "content.js"],
+      "css": ["panel.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}

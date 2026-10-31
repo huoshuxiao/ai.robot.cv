@@ -31,7 +31,10 @@ search:
     - 保险
     - 房产中介
     - 培训讲师
+    - 教育
     - 实习
+    - 在校
+    - 应届
   salary_range_k: [13, 26]
   max_pages: 5
   job_types:

@@ -22,7 +22,7 @@ from .base import (
     SendResult,
 )
 
-LOGIN_COOKIES = ("zp_token", "geek_zp_token")
+LOGIN_COOKIES = ("zp_token", "geek_zp_token", "zp_at")
 
 
 def load_selectors(path: Path) -> dict[str, Any]:
@@ -287,6 +287,13 @@ class BossAdapter(BaseAdapter):
         self._start()
         assert self._page is not None and self._ctx is not None
         try:
+            cookies = {c["name"] for c in self._ctx.cookies("https://www.zhipin.com")}
+        except Exception:
+            cookies = set()
+        if any(name in cookies for name in LOGIN_COOKIES):
+            self.log.debug("登录检查：命中 Cookie %s", sorted(cookies & set(LOGIN_COOKIES)))
+            return True
+        try:
             self._page.goto(
                 self.selectors.get("home_url", "https://www.zhipin.com/"),
                 wait_until="domcontentloaded",
@@ -294,7 +301,6 @@ class BossAdapter(BaseAdapter):
             self._page.wait_for_timeout(1200)
         except Exception as exc:
             self.log.warning("打开首页失败：%s", exc)
-        cookies = {c["name"] for c in self._ctx.cookies("https://www.zhipin.com")}
         content = self._content()
         state = detect_guard(content, self._page.url, self.selectors)
         if state in ("captcha", "risk"):

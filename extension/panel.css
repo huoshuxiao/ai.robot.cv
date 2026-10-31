@@ -1,0 +1,81 @@
+#jobbot-panel {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  width: 340px;
+  z-index: 2147483647;
+  background: #111827;
+  color: #f9fafb;
+  border: 1px solid #374151;
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  font: 13px/1.5 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+#jobbot-panel .jb-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  font-weight: 600;
+  border-bottom: 1px solid #374151;
+}
+#jobbot-panel .jb-status {
+  font-weight: 400;
+  color: #93c5fd;
+  font-size: 12px;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#jobbot-panel .jb-body {
+  padding: 8px 10px 10px;
+}
+#jobbot-panel .jb-job {
+  color: #d1d5db;
+  font-size: 12px;
+  min-height: 18px;
+  margin-bottom: 6px;
+}
+#jobbot-panel textarea {
+  width: 100%;
+  box-sizing: border-box;
+  height: 74px;
+  resize: vertical;
+  background: #1f2937;
+  color: #f9fafb;
+  border: 1px solid #4b5563;
+  border-radius: 6px;
+  padding: 6px;
+  font-size: 12px;
+}
+#jobbot-panel .jb-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+#jobbot-panel button {
+  background: #2563eb;
+  color: white;
+  border: 0;
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+#jobbot-panel button.secondary {
+  background: #374151;
+}
+#jobbot-panel button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+#jobbot-panel .jb-log {
+  margin-top: 8px;
+  color: #9ca3af;
+  font-size: 11px;
+  max-height: 80px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
