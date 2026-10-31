@@ -13,8 +13,8 @@ storage:
   debug_dir: data/debug
 
 defaults:
-  limit_per_run: 5          # 每次运行最多投递数（可被平台配置覆盖）
-  limit_per_day: 5          # 每日最多投递数
+  limit_per_run: 3          # 每次运行最多投递数（可被平台配置覆盖）
+  limit_per_day: 3          # 每日最多投递数
   min_score: 60             # 低于该分数不进计划
   min_interval_seconds: 20  # 两条发送之间的最小随机间隔
   max_interval_seconds: 45
@@ -35,6 +35,8 @@ search:
     - 实习
     - 在校
     - 应届
+    # - 对日
+    # - 猎头
   salary_range_k: [13, 26]
   max_pages: 5
   job_types:
@@ -72,10 +74,13 @@ ai:
 platforms:
   boss:
     enabled: true
-    city: 大连
-    city_code: "101070200"              # BOSS 城市编码：大连
-    limit_per_run: 5                    # 目标.md：数量 5
-    limit_per_day: 5
+    cities:                             # 目标.md：大连、北京
+      - name: 大连
+        code: "101070200"
+      - name: 北京
+        code: "101010100"
+    limit_per_run: 3                    # 目标.md：数量 3
+    limit_per_day: 3
     selectors: config/selectors.boss.yaml
     user_data_dir: data/browser/boss
     locale: zh-CN

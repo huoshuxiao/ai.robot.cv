@@ -12,6 +12,7 @@ import yaml
 from bs4 import BeautifulSoup
 
 from ..browser import find_system_chromium
+from ..config import CityConfig
 from ..models import Job
 from .base import (
     AdapterError,
@@ -379,23 +380,36 @@ class BossAdapter(BaseAdapter):
         template = self.selectors["search_url"]
         jobs: list[Job] = []
         seen: set[str] = set()
-        for keyword in self.search.keywords:
-            url = template.format(query=quote(keyword), city_code=self.platform.city_code)
-            self.log.info("搜索：%s（%s）", keyword, url)
-            self._goto(url)
-            if not self._wait_for_cards():
-                self.log.info("关键词「%s」无结果", keyword)
-                continue
-            for page_no in range(1, self.search.max_pages + 1):
-                for job in parse_job_cards(self._content(), self.platform.name, self.selectors):
-                    if job.job_id in seen:
-                        continue
-                    seen.add(job.job_id)
-                    job.raw["keyword"] = keyword
-                    jobs.append(job)
-                self.log.info("「%s」第 %d 页累计 %d 个职位", keyword, page_no, len(jobs))
-                if page_no >= self.search.max_pages or not self._goto_next_page():
-                    break
+        cities = self.platform.search_cities
+        if not cities:
+            cities = (CityConfig(self.platform.city, self.platform.city_code),)
+        for city in cities:
+            for keyword in self.search.keywords:
+                url = template.format(query=quote(keyword), city_code=city.code)
+                self.log.info("搜索：%s / %s（%s）", city.name, keyword, url)
+                self._goto(url)
+                if not self._wait_for_cards():
+                    self.log.info("城市「%s」关键词「%s」无结果", city.name, keyword)
+                    continue
+                for page_no in range(1, self.search.max_pages + 1):
+                    for job in parse_job_cards(
+                        self._content(), self.platform.name, self.selectors
+                    ):
+                        if job.job_id in seen:
+                            continue
+                        seen.add(job.job_id)
+                        job.raw["keyword"] = keyword
+                        job.raw["search_city"] = city.name
+                        jobs.append(job)
+                    self.log.info(
+                        "「%s / %s」第 %d 页累计 %d 个职位",
+                        city.name,
+                        keyword,
+                        page_no,
+                        len(jobs),
+                    )
+                    if page_no >= self.search.max_pages or not self._goto_next_page():
+                        break
         return jobs
 
     def fetch_detail(self, job: Job) -> Job:

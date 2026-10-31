@@ -365,3 +365,11 @@ def test_empty_ollama_content_is_rejected(local_config, profile, job, match):
 )
 def test_extract_json(text, expected):
     assert extract_json(text) == expected
+
+
+def test_profile_facts_include_supplement(profile):
+    from jobbot.ai import profile_facts
+    facts = profile_facts(profile)
+    assert "非全日制" in facts
+    assert "日语 N3" in facts
+    assert "英语" in facts

@@ -9,13 +9,30 @@ from jobbot.config import ConfigError, load_config, load_profile
 def test_goal_alignment(cfg, profile):
     pc = cfg.platform("boss")
     assert pc.enabled
-    assert pc.city == "大连"
-    assert pc.city_code == "101070200"
-    assert pc.limit_per_run == 5
-    assert pc.limit_per_day == 5
+    assert [city.name for city in pc.search_cities] == ["大连", "北京"]
+    assert [city.code for city in pc.search_cities] == ["101070200", "101010100"]
+    assert pc.limit_per_run == 3
+    assert pc.limit_per_day == 3
     assert profile.name == "孙文昆"
     assert profile.years_experience == 21
     assert profile.expected_salary_k == (13, 26)
+
+
+def test_single_city_backward_compat(project):
+    path = project / "config" / "config.yaml"
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data["platforms"]["boss"].pop("cities", None)
+    data["platforms"]["boss"]["city"] = "大连"
+    data["platforms"]["boss"]["city_code"] = "101070200"
+    path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    cfg = load_config(path)
+    pc = cfg.platform("boss")
+    assert [(c.name, c.code) for c in pc.search_cities] == [("大连", "101070200")]
+
+
+def test_reject_empty_cities(mutate_cfg):
+    with pytest.raises(ConfigError, match="cities"):
+        mutate_cfg(lambda d: d["platforms"]["boss"].__setitem__("cities", []))
 
 
 def test_ai_local_and_online_providers(cfg):
@@ -154,8 +171,14 @@ def test_reject_score_above_100(mutate_cfg):
 
 
 def test_reject_enabled_platform_without_city(mutate_cfg):
+    def mutate(data):
+        boss = data["platforms"]["boss"]
+        boss.pop("cities", None)
+        boss["city"] = ""
+        boss["city_code"] = ""
+
     with pytest.raises(ConfigError, match="city"):
-        mutate_cfg(lambda d: d["platforms"]["boss"].__setitem__("city", ""))
+        mutate_cfg(mutate)
 
 
 def test_profile_requires_core_skills(project, tmp_cfg):
@@ -165,6 +188,12 @@ def test_profile_requires_core_skills(project, tmp_cfg):
     path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
     with pytest.raises(ConfigError, match="skills.core"):
         load_profile(tmp_cfg.profile_path)
+
+
+def test_profile_supplement_is_loaded(profile):
+    assert profile.education["note"] == "非全日制专科/本科，学信网可查，有毕业证无学位证"
+    assert any("日语 N3" in item for item in profile.raw["languages"])
+    assert any("英语" in item for item in profile.raw["languages"])
 
 
 def test_missing_config_file(tmp_path):

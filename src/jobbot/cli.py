@@ -246,7 +246,10 @@ def cmd_doctor(args, cfg: Config, profile: Profile) -> int:
     print(f"项目根目录：{cfg.root}")
     for name, pc in cfg.platforms.items():
         if pc.enabled:
-            print(f"平台：{name} · {pc.city} · 每次 {pc.limit_per_run} · 每日 {pc.limit_per_day}")
+            cities = "、".join(city.name for city in pc.search_cities) or pc.city
+            print(
+                f"平台：{name} · {cities} · 每次 {pc.limit_per_run} · 每日 {pc.limit_per_day}"
+            )
     print(f"关键词：{'、'.join(cfg.search.keywords)}")
     print(f"排除词：{'、'.join(cfg.search.exclude_keywords) or '无'}")
     print(
@@ -554,6 +557,28 @@ def cmd_demo(args, cfg: Config, profile: Profile) -> int:
         adapter.close()
 
 
+def cmd_import_extension(args, cfg: Config, profile: Profile) -> int:
+    from .extension_import import import_extension_file
+
+    path = Path(args.file).expanduser()
+    if not path.is_file():
+        print(f"结果文件不存在：{path}", file=sys.stderr)
+        return EXIT_CONFIG
+    storage = Storage(cfg.storage.db)
+    try:
+        counts = import_extension_file(storage, path)
+    except (ValueError, json.JSONDecodeError) as exc:
+        print(f"导入失败：{exc}", file=sys.stderr)
+        return EXIT_CONFIG
+    print(
+        "导入完成："
+        f"已发送 {counts['sent']}，待确认 {counts['unknown']}，"
+        f"失败 {counts['failed']}，跳过 {counts['skipped']}"
+    )
+    print(f"台账：{cfg.storage.db}")
+    return EXIT_OK
+
+
 def cmd_bridge(args, cfg: Config, profile: Profile) -> int:
     from .bridge import serve_bridge
 
@@ -617,6 +642,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("bridge", help="启动浏览器扩展的本地 AI 桥")
     p.add_argument("--port", type=int, default=8765)
     p.set_defaults(func=cmd_bridge)
+
+    p = sub.add_parser("import-extension", help="导入扩展发送结果到主台账")
+    p.add_argument("--file", required=True, help="jobbot-auto-send-result.json")
+    p.set_defaults(func=cmd_import_extension)
     return parser
 
 

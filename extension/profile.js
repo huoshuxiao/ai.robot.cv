@@ -20,6 +20,14 @@
       "GCP",
       "ETL",
     ],
+    education: {
+      school: "中央广播电视大学",
+      degree: "本科",
+      major: "计算机科学与技术",
+      period: "2005-2008",
+      note: "非全日制专科/本科，学信网可查，有毕业证无学位证",
+    },
+    languages: ["日语 N3：可读写，听说有困难", "英语：可阅读资料，听说不流利"],
     summary:
       "21年Java后端开发经验，长期服务金融与通信行业客户。擅长Spring Cloud/Spring Boot微服务、" +
       "Oracle与PostgreSQL数据库开发与性能优化，主导过Oracle→PostgreSQL迁移工具和Selenium脚本维护平台。",

@@ -448,6 +448,448 @@
     setStatus(`输入探针：${rows.length} 个元素，已导出`);
   }
 
+  const AUTO_KEY = "jobbotAutoState";
+  const AUTO_SEND_KEY = "jobbotAutoSendState";
+  const PREVIEW_KEY = "jobbotPreviewState";
+  let autoRunning = false;
+
+  function parseList(value) {
+    return (value || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
+  function parseCities(value) {
+    return parseList(value).map((item) => {
+      const parts = item.split(":");
+      if (parts.length === 1) return { code: parts[0], name: parts[0] };
+      return { code: parts[0], name: parts.slice(1).join(":") };
+    });
+  }
+
+  function buildQueue(cities, keywords) {
+    const queue = [];
+    for (const keyword of keywords) {
+      for (const city of cities) queue.push({ keyword, city });
+    }
+    return queue;
+  }
+
+  function searchUrlFor(item, runId) {
+    return (
+      `https://www.zhipin.com/web/geek/job?query=${encodeURIComponent(item.keyword)}` +
+      `&city=${encodeURIComponent(item.city.code)}` +
+      `#jobbot_auto=auto_plan&jobbot_run=${encodeURIComponent(runId)}`
+    );
+  }
+
+  function extractCardJob(card) {
+    const link = card.querySelector('a.job-name, a[href*="/job_detail/"]');
+    const href = link ? new URL(link.getAttribute("href"), location.href).href : "";
+    const match = href.match(/\/job_detail\/([^/?#]+)\.html/);
+    const tags = qa(".tag-list li", card).map(text).filter(Boolean);
+    return {
+      id: match ? match[1] : "",
+      url: href,
+      title: text(q(".job-name", card)),
+      company: text(q(".boss-name", card)) || text(q(".company-name", card)),
+      salary: text(q(".job-salary", card)),
+      area: text(q(".company-location", card)),
+      tags,
+      description: "",
+      alreadyChat: card.innerText.includes("已沟通") || card.innerText.includes("继续沟通"),
+    };
+  }
+
+  async function saveAuto(state) {
+    await chrome.storage.local.set({ [AUTO_KEY]: state });
+  }
+
+  async function finishAutoPlan(state, note) {
+    state.active = false;
+    state.phase = "done";
+    state.finished_at = new Date().toISOString();
+    if (note) state.note = note;
+    await saveAuto(state);
+    await chrome.runtime.sendMessage({
+      type: "download",
+      filename: "jobbot-auto-plan.json",
+      content: JSON.stringify(
+        {
+          run: state.run,
+          mode: state.mode,
+          limit: state.limit,
+          queue: state.queue,
+          results: state.results,
+          handled: state.handled,
+          finished_at: state.finished_at,
+          note: state.note || "",
+        },
+        null,
+        2
+      ),
+    });
+    setStatus(`自动计划完成：${state.results.length}/${state.limit} 条，已导出`);
+  }
+
+  async function advanceAutoPlan(state) {
+    state.queueIndex += 1;
+    if (state.results.length >= state.limit || state.queueIndex >= state.queue.length) {
+      await finishAutoPlan(state);
+      return;
+    }
+    const item = state.queue[state.queueIndex];
+    state.phase = "search";
+    await saveAuto(state);
+    setStatus(`下一搜索：${item.city.name} / ${item.keyword}`);
+    await sleep(800);
+    location.href = searchUrlFor(item, state.run);
+  }
+
+  async function autoPlan(params) {
+    if (autoRunning) return;
+    autoRunning = true;
+    try {
+      const runId = params.get("jobbot_run") || String(Date.now());
+      const stored = await chrome.storage.local.get(AUTO_KEY);
+      let state = stored[AUTO_KEY];
+      if (!state || state.run !== runId) {
+        const cities = parseCities(params.get("jobbot_cities"));
+        const keywords = parseList(params.get("jobbot_keywords"));
+        if (!cities.length || !keywords.length) {
+          setStatus("自动计划缺少城市或关键词");
+          return;
+        }
+        const limit = Number(params.get("jobbot_limit") || 3);
+        state = {
+          run: runId,
+          mode: "auto_plan",
+          active: true,
+          phase: "search",
+          limit: Math.max(1, limit),
+          cities,
+          keywords,
+          queue: buildQueue(cities, keywords),
+          queueIndex: 0,
+          results: [],
+          handled: [],
+          exclude: parseList(
+            params.get("jobbot_exclude") || "销售,保险,教育,在校,应届,实习"
+          ),
+          excludeTitle: parseList(
+            params.get("jobbot_exclude_title") || "大模型,算法,AI"
+          ),
+          titleKeywords: parseList(
+            params.get("jobbot_title_keywords") || "Java,后端,服务端"
+          ),
+        };
+        await saveAuto(state);
+      }
+      if (!state.active) {
+        setStatus("自动计划已完成");
+        return;
+      }
+      ensurePanel();
+      setStatus(`自动搜索 ${state.queueIndex + 1}/${state.queue.length}`);
+      const card = await waitFor(CARD, 20000);
+      if (!card) {
+        await advanceAutoPlan(state);
+        return;
+      }
+      const candidate = qa(CARD)
+        .filter(visible)
+        .map(extractCardJob)
+        .find((job) => {
+          if (!job.id || state.handled.includes(job.id) || job.alreadyChat) return false;
+          const haystack = `${job.title} ${job.company} ${(job.tags || []).join(" ")}`;
+          if (state.exclude.some((word) => haystack.includes(word))) return false;
+          if (state.excludeTitle.some((word) => job.title.includes(word))) return false;
+          if (job.tags.some((tag) => tag.includes("应届") || tag.includes("在校"))) return false;
+          return state.titleKeywords.some((word) =>
+            job.title.toLowerCase().includes(word.toLowerCase())
+          );
+        });
+      if (!candidate) {
+        await advanceAutoPlan(state);
+        return;
+      }
+      state.job = candidate;
+      setJob(candidate);
+      log(`候选：${candidate.title} / ${candidate.company}`);
+      const greeting = await makeGreeting(candidate);
+      if (!greeting) {
+        await finishAutoPlan(state, "AI 生成失败");
+        return;
+      }
+      state.results.push({
+        job: candidate,
+        greeting,
+        source: "ai",
+        time: new Date().toISOString(),
+      });
+      state.handled.push(candidate.id);
+      await saveAuto(state);
+      await advanceAutoPlan(state);
+    } finally {
+      autoRunning = false;
+    }
+  }
+
+  async function saveAutoSend(state) {
+    await chrome.storage.local.set({ [AUTO_SEND_KEY]: state });
+  }
+
+  async function finishAutoSend(state, note) {
+    state.active = false;
+    state.finished_at = new Date().toISOString();
+    if (note) state.note = note;
+    await saveAutoSend(state);
+    await chrome.storage.local.remove("pendingChat");
+    const sent = state.records.filter((r) => r.status === "sent").length;
+    await chrome.runtime.sendMessage({
+      type: "download",
+      filename: "jobbot-auto-send-result.json",
+      content: JSON.stringify(
+        {
+          run: state.run,
+          total: state.jobs.length,
+          sent,
+          records: state.records,
+          finished_at: state.finished_at,
+          note: state.note || "",
+        },
+        null,
+        2
+      ),
+    });
+    setStatus(`自动发送完成：${sent}/${state.jobs.length}，已导出结果`);
+  }
+
+  async function autoSendAdvance(state, ok, error) {
+    const current = state.jobs[state.index];
+    if (!current) {
+      await finishAutoSend(state);
+      return;
+    }
+    if (state.currentJobId && state.currentJobId !== current.job.id) return;
+    if (state.records.some((r) => r.job && r.job.id === current.job.id)) return;
+    state.records.push({
+      job: current.job,
+      greeting: current.greeting,
+      status: ok ? "sent" : "unconfirmed",
+      error: error || "",
+      time: new Date().toISOString(),
+    });
+    state.index += 1;
+    state.currentJobId = null;
+    await saveAutoSend(state);
+    await chrome.storage.local.remove("pendingChat");
+    if (state.index >= state.jobs.length) {
+      await finishAutoSend(state);
+      return;
+    }
+    const next = state.jobs[state.index];
+    setStatus(`下一条 ${state.index + 1}/${state.jobs.length}`);
+    await sleep(800);
+    location.href =
+      next.job.url + `#jobbot_auto=auto_send&jobbot_run=${encodeURIComponent(state.run)}`;
+  }
+
+  async function autoSendCurrent(state) {
+    const current = state.jobs[state.index];
+    if (!current) {
+      await finishAutoSend(state);
+      return;
+    }
+    state.currentJobId = current.job.id;
+    await saveAutoSend(state);
+    ensurePanel();
+    setJob(current.job);
+    state.greeting = current.greeting;
+    setGreeting(current.greeting);
+    setStatus(`自动发送 ${state.index + 1}/${state.jobs.length}`);
+    const button = findChatButton();
+    if (!button) {
+      await autoSendAdvance(state, false, "未找到沟通按钮");
+      return;
+    }
+    await chrome.storage.local.set({
+      pendingChat: {
+        job: current.job,
+        greeting: current.greeting,
+        auto: "send",
+        autoSend: true,
+        created: Date.now(),
+      },
+    });
+    setStatus(`点击${button.label}…`);
+    button.el.click();
+    await sleep(2500);
+
+    const modal = qa(".dialog-wrap, .dialog-container").find(visible);
+    let continueButton = null;
+    if (modal) {
+      continueButton = Array.from(
+        modal.querySelectorAll("a,button,div,span")
+      ).find((el) => visible(el) && text(el).includes("继续沟通"));
+    }
+    if (!continueButton) {
+      continueButton = qa("a,button,div,span").find(
+        (el) => visible(el) && text(el) === "继续沟通"
+      );
+    }
+    if (continueButton) {
+      setStatus("已发送默认招呼，进入聊天…");
+      continueButton.click();
+      await sleep(2500);
+    }
+    if (await sendHere(current.greeting)) {
+      await autoSendAdvance(state, true, "");
+      return;
+    }
+    setStatus("等待聊天页发送 AI 招呼…");
+  }
+
+  async function autoSendInit(params) {
+    const run = params.get("jobbot_run") || "";
+    const stored = await chrome.storage.local.get([AUTO_SEND_KEY, AUTO_KEY]);
+    let state = stored[AUTO_SEND_KEY];
+    if (!state || state.run !== run) {
+      const results = (stored[AUTO_KEY] && stored[AUTO_KEY].results) || [];
+      if (!results.length) {
+        setStatus("没有自动计划结果，请先运行 auto_plan");
+        return;
+      }
+      state = {
+        run: run || stored[AUTO_KEY].run,
+        active: true,
+        index: 0,
+        jobs: results,
+        records: [],
+        currentJobId: null,
+      };
+      await saveAutoSend(state);
+    }
+    if (!state.active) {
+      setStatus("自动发送已完成");
+      return;
+    }
+    await autoSendCurrent(state);
+  }
+
+  async function savePreview(state) {
+    await chrome.storage.local.set({ [PREVIEW_KEY]: state });
+  }
+
+  async function finishPreview(state) {
+    state.active = false;
+    state.finished_at = new Date().toISOString();
+    await savePreview(state);
+    const missing = state.records.filter((r) => !r.button).length;
+    await chrome.runtime.sendMessage({
+      type: "download",
+      filename: "jobbot-auto-send-preview.json",
+      content: JSON.stringify(
+        {
+          run: state.run,
+          total: state.jobs.length,
+          missing,
+          records: state.records,
+          finished_at: state.finished_at,
+        },
+        null,
+        2
+      ),
+    });
+    setStatus(`预检完成：${state.jobs.length} 条，缺按钮 ${missing}`);
+  }
+
+  async function advancePreview(state) {
+    state.index += 1;
+    if (state.index >= state.jobs.length) {
+      await finishPreview(state);
+      return;
+    }
+    const next = state.jobs[state.index];
+    await savePreview(state);
+    setStatus(`预检下一条 ${state.index + 1}/${state.jobs.length}`);
+    await sleep(500);
+    location.href =
+      next.job.url + `#jobbot_auto=auto_preview&jobbot_run=${encodeURIComponent(state.run)}`;
+  }
+
+  async function previewCurrent(state) {
+    const current = state.jobs[state.index];
+    ensurePanel();
+    setJob(current.job);
+    setGreeting(current.greeting);
+    setStatus(`预检 ${state.index + 1}/${state.jobs.length}`);
+    await sleep(1000);
+    const candidates = qa(".btn-startchat, .op-btn-chat").filter(visible);
+    const button = candidates.find((el) =>
+      ["立即沟通", "继续沟通"].some((label) => text(el).includes(label))
+    );
+    state.records.push({
+      job: current.job,
+      greeting: current.greeting,
+      button: button ? text(button) : "",
+      button_class: button ? button.className : "",
+      buttons_found: candidates.map((el) => text(el)),
+      url: location.href,
+      time: new Date().toISOString(),
+    });
+    await savePreview(state);
+    await advancePreview(state);
+  }
+
+  async function autoPreviewInit(params) {
+    const run = params.get("jobbot_run") || "";
+    const stored = await chrome.storage.local.get([PREVIEW_KEY, AUTO_KEY]);
+    let state = stored[PREVIEW_KEY];
+    if (!state || state.run !== run) {
+      const results = (stored[AUTO_KEY] && stored[AUTO_KEY].results) || [];
+      if (!results.length) {
+        setStatus("没有自动计划结果，请先运行 auto_plan");
+        return;
+      }
+      state = { run: run || stored[AUTO_KEY].run, active: true, index: 0, jobs: results, records: [] };
+      await savePreview(state);
+    }
+    if (!state.active) {
+      setStatus("预检已完成");
+      return;
+    }
+    await previewCurrent(state);
+  }
+
+  async function modalProbe() {
+    ensurePanel();
+    await waitFor(".btn-startchat, .op-btn-chat", 15000);
+    const button = findChatButton();
+    if (!button) {
+      setStatus("未找到沟通按钮");
+      await downloadHtml();
+      return;
+    }
+    setStatus(`探测弹窗：点击${button.label}`);
+    button.el.click();
+    await sleep(2500);
+    const modal = qa(".dialog-wrap, .dialog-container").find(visible);
+    if (modal) {
+      const continueButton = Array.from(
+        modal.querySelectorAll("a,button,div,span")
+      ).find((el) => visible(el) && text(el).includes("继续沟通"));
+      if (continueButton) {
+        setStatus("点击继续沟通");
+        continueButton.click();
+        await sleep(2000);
+      }
+    }
+    setStatus("导出弹窗 HTML…");
+    await downloadHtml();
+  }
+
   async function handleChatPage() {
     const { pendingChat, chatDumpRequested } = await chrome.storage.local.get([
       "pendingChat",
@@ -468,7 +910,22 @@
     if (pendingChat.auto === "send") {
       setStatus("聊天页：自动发送…");
       const ok = await sendHere(state.greeting);
-      await finish(ok ? "sent" : "unconfirmed", ok ? "" : "未确认到消息气泡");
+      if (pendingChat.autoSend) {
+        const { [AUTO_SEND_KEY]: sendState } = await chrome.storage.local.get(
+          AUTO_SEND_KEY
+        );
+        if (sendState && sendState.active) {
+          await autoSendAdvance(
+            sendState,
+            ok,
+            ok ? "" : "未确认到消息气泡"
+          );
+        } else {
+          await finish(ok ? "sent" : "unconfirmed", ok ? "" : "未确认到消息气泡");
+        }
+      } else {
+        await finish(ok ? "sent" : "unconfirmed", ok ? "" : "未确认到消息气泡");
+      }
     } else {
       setStatus("聊天页：请确认后点击发送");
       q("#jb-send", panelEl).onclick = async () => {
@@ -585,6 +1042,24 @@
       setStatus("导出页面 HTML…");
       await sleep(2500);
       await downloadHtml();
+      return;
+    }
+    if (auto === "auto_plan") {
+      if (location.pathname.includes("/web/geek/job")) {
+        await autoPlan(new URLSearchParams(location.hash.replace(/^#/, "")));
+        return;
+      }
+    }
+    if (auto === "auto_send" && location.pathname.includes("/job_detail/")) {
+      await autoSendInit(new URLSearchParams(location.hash.replace(/^#/, "")));
+      return;
+    }
+    if (auto === "auto_preview" && location.pathname.includes("/job_detail/")) {
+      await autoPreviewInit(new URLSearchParams(location.hash.replace(/^#/, "")));
+      return;
+    }
+    if (auto === "modal_probe" && location.pathname.includes("/job_detail/")) {
+      await modalProbe();
       return;
     }
     if (location.pathname.includes("/web/geek/chat")) {

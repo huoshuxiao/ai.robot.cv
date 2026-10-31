@@ -11,7 +11,7 @@ import yaml
 
 from jobbot.adapters.boss import BossAdapter, load_selectors
 from jobbot.browser import find_system_chromium
-from jobbot.config import load_config, load_profile
+from jobbot.config import CityConfig, load_config, load_profile
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -146,7 +146,9 @@ def test_boss_adapter_playwright_end_to_end(local_site, tmp_path):
         cfg.platform("boss"),
         selectors=selectors_path,
         user_data_dir=tmp_path / "profile",
+        city="本地",
         city_code="local",
+        cities=(CityConfig("本地", "local"),),
     )
     search = replace(cfg.search, keywords=("Java",), max_pages=1)
     defaults = replace(

@@ -44,10 +44,11 @@ class Planner:
         requested = pc.limit_per_run if limit is None else max(0, int(limit))
         effective = min(requested, day_remaining)
 
+        city_names = "、".join(city.name for city in pc.search_cities) or pc.city
         plan = Plan(
             run_id=run_id,
             platform=pc.name,
-            city=pc.city,
+            city=city_names,
             created_at=now.isoformat(timespec="seconds"),
             min_score=self.config.defaults.min_score,
             limit=effective,
@@ -97,7 +98,8 @@ class Planner:
                 skipped.append(self._skip(job, "平台显示已沟通", 0))
                 continue
 
-            match = score_job(job, self.profile, self.config.search, pc.city)
+            search_city = str(job.raw.get("search_city") or pc.city)
+            match = score_job(job, self.profile, self.config.search, search_city)
             if match.skipped or match.score < self.config.defaults.min_score:
                 if match.skipped:
                     reason = match.reasons[0] if match.reasons else "命中排除规则"

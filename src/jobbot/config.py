@@ -91,17 +91,32 @@ class AIConfig:
 
 
 @dataclass(frozen=True)
+class CityConfig:
+    name: str
+    code: str
+
+
+@dataclass(frozen=True)
 class PlatformConfig:
     name: str
     enabled: bool
     city: str = ""
     city_code: str = ""
+    cities: tuple[CityConfig, ...] = ()
     limit_per_run: int = 5
     limit_per_day: int = 5
     selectors: Path | None = None
     user_data_dir: Path | None = None
     locale: str = "zh-CN"
     extra: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def search_cities(self) -> tuple[CityConfig, ...]:
+        if self.cities:
+            return self.cities
+        if self.city and self.city_code:
+            return (CityConfig(self.city, self.city_code),)
+        return ()
 
 
 @dataclass(frozen=True)
@@ -415,11 +430,25 @@ def _parse_platforms(data: dict[str, Any], defaults: DefaultsConfig, root: Path)
             )
         city = str(raw.get("city", "")).strip()
         city_code = str(raw.get("city_code", "")).strip()
+        cities_raw = raw.get("cities")
+        cities: tuple[CityConfig, ...] = ()
+        if cities_raw is not None:
+            cities = tuple(
+                CityConfig(
+                    name=_str(_mapping(item, f"{label}.cities[]"), "name", f"{label}.cities[]"),
+                    code=_str(_mapping(item, f"{label}.cities[]"), "code", f"{label}.cities[]"),
+                )
+                for item in _list(cities_raw, f"{label}.cities")
+            )
+            if not cities:
+                raise ConfigError(f"{label}.cities 至少配置一个城市")
+            city = cities[0].name
+            city_code = cities[0].code
         if enabled:
-            if not city:
-                raise ConfigError(f"{label}.city 必须填写")
-            if not city_code:
-                raise ConfigError(f"{label}.city_code 必须填写（平台城市编码）")
+            if not cities and not (city and city_code):
+                raise ConfigError(f"{label} 必须配置 city/city_code 或 cities")
+            if cities and any(not c.name or not c.code for c in cities):
+                raise ConfigError(f"{label}.cities 的 name/code 不能为空")
         selectors = raw.get("selectors")
         user_data_dir = raw.get("user_data_dir")
         result[name] = PlatformConfig(
@@ -427,6 +456,7 @@ def _parse_platforms(data: dict[str, Any], defaults: DefaultsConfig, root: Path)
             enabled=enabled,
             city=city,
             city_code=city_code,
+            cities=cities,
             limit_per_run=_int(raw, "limit_per_run", label, defaults.limit_per_run, minimum=1),
             limit_per_day=_int(raw, "limit_per_day", label, defaults.limit_per_day, minimum=1),
             selectors=_resolve(root, selectors) if isinstance(selectors, str) else None,

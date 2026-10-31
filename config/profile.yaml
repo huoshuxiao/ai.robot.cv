@@ -50,6 +50,11 @@ education:
   degree: 本科
   major: 计算机科学与技术
   period: 2005-2008
+  note: 非全日制专科/本科，学信网可查，有毕业证无学位证
+
+languages:
+  - 日语 N3：可读写，听说有困难
+  - 英语：可阅读资料，听说不流利
 
 experiences:
   - company: 埃森哲信息技术（大连）有限公司
