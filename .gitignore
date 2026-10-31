@@ -218,3 +218,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# jobbot runtime data (ledger, plans, reports, browser profile, debug dumps)
+data/
+
+src/jobbot/__init__.py
+
+src/jobbot/__main__.py
+
+src/jobbot/adapters/__init__.py

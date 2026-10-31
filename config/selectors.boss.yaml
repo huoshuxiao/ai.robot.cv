@@ -1,0 +1,63 @@
+# BOSS 直聘页面选择器。
+# 平台改版后只需修这里；找不到元素时工具会把截图/HTML 落到 data/debug/。
+home_url: "https://www.zhipin.com/"
+login_url: "https://www.zhipin.com/web/user/?ka=header-login"
+search_url: "https://www.zhipin.com/web/geek/job?query={query}&city={city_code}"
+job_detail_url: "https://www.zhipin.com/job_detail/{job_id}.html"
+
+search:
+  card: ".job-card-wrapper"
+  card_link: "a.job-card-left"
+  title: ".job-name"
+  company: ".company-name"
+  salary: ".salary"
+  area: ".job-area"
+  tags: ".tag-list li"
+  recruiter: ".info-public"
+  next_page: "a.i-next"
+  empty: ".job-empty"
+
+detail:
+  description: ".job-sec-text"
+  company: ".company-info .company-name, .sider-company .company-name"
+  salary: ".job-banner .salary, .salary"
+  location: ".job-banner .text-city, .job-location, .location-address"
+  tags: ".job-keyword-list li, .job-tags span"
+  recruiter: ".job-boss-info .name, .boss-info .name"
+  chat_button: ".btn-startchat, .op-btn-chat"
+  already_chat_text: "继续沟通"
+
+chat:
+  input: "#chat-input, .chat-input"
+  send_button: ".send-message, .btn-send"
+  message_item: ".message-item, .chat-message"
+
+login:
+  logged_in_texts:
+    - "我的简历"
+    - "我的在线简历"
+  logged_out_texts:
+    - "登录/注册"
+    - "立即登录"
+
+# 出现以下任一选择器/文本即视为需要人工处理，发送流程立即停止。
+guard:
+  captcha_selectors:
+    - ".geetest_panel"
+    - ".verify-slider"
+    - "iframe[src*='captcha']"
+  risk_selectors:
+    - ".risk-tip"
+    - ".dialog-tip"
+  login_wall_selectors:
+    - ".login-dialog"
+    - ".boss-login"
+  login_url_markers:
+    - "/web/user/"
+  risk_url_markers:
+    - "/web/passport/zp/verify"
+    - "verify.html"
+  captcha_texts:
+    - "请完成验证"
+    - "安全验证"
+    - "滑动验证"

@@ -1,0 +1,72 @@
+# ============================================================
+# jobbot 主配置
+# 修改本文件即可调整 平台 / 地区 / 数量，无需改代码。
+# 默认只读：plan 不会发送消息；apply/run 必须显式 --yes。
+# ============================================================
+
+profile: config/profile.yaml
+
+storage:
+  db: data/jobbot.sqlite3
+  plans_dir: data/plans
+  reports_dir: data/reports
+  debug_dir: data/debug
+
+defaults:
+  limit_per_run: 5          # 每次运行最多投递数（可被平台配置覆盖）
+  limit_per_day: 5          # 每日最多投递数
+  min_score: 60             # 低于该分数不进计划
+  min_interval_seconds: 20  # 两条发送之间的最小随机间隔
+  max_interval_seconds: 45
+  headless: false           # 默认有头，便于观察与人工接管
+  page_timeout_seconds: 30
+
+search:
+  keywords:
+    - Java
+    - Java 后端
+    - Spring Boot
+  exclude_keywords:
+    - 销售
+    - 保险
+    - 房产中介
+    - 培训讲师
+    - 实习
+  salary_range_k: [13, 26]
+  max_pages: 5
+  job_types:
+    - 全职
+
+ai:
+  enabled: true                         # 有 Key 才真正调用；否则自动降级规则模式
+  base_url: https://api.openai.com/v1   # 可换成 DeepSeek / 通义等 OpenAI 兼容地址
+  model: gpt-4o-mini
+  api_key_env: OPENAI_API_KEY
+  timeout_seconds: 30
+  max_greeting_chars: 120
+  use_for_scoring: true                 # 规则分 70% + AI 分 30%
+
+platforms:
+  boss:
+    enabled: true
+    city: 大连
+    city_code: "101070200"              # BOSS 城市编码：大连
+    limit_per_run: 5                    # 目标.md：数量 5
+    limit_per_day: 5
+    selectors: config/selectors.boss.yaml
+    user_data_dir: data/browser/boss
+    locale: zh-CN
+
+  # 预留：实现适配器后把 enabled 改为 true
+  # 51job:
+  #   enabled: false
+  #   city: 大连
+  #   city_code: "230300"
+  #   limit_per_run: 5
+  #   limit_per_day: 5
+  # 智联招聘:
+  #   enabled: false
+  #   city: 大连
+  #   city_code: "531"
+  #   limit_per_run: 5
+  #   limit_per_day: 5
