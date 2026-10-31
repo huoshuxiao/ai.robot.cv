@@ -18,6 +18,92 @@ def test_goal_alignment(cfg, profile):
     assert profile.expected_salary_k == (13, 26)
 
 
+def test_ai_local_and_online_providers(cfg):
+    ai = cfg.ai
+    assert ai.enabled
+    assert ai.provider == "local"
+    assert ai.fallback is None
+    local = ai.providers["local"]
+    assert local.enabled is True
+    assert local.type == "ollama"
+    assert local.model == "deepseek-r1:8b"
+    assert local.base_url == "http://127.0.0.1:11434"
+    assert local.thinking_budget == 512
+    assert local.num_ctx == 4096
+    online = ai.providers["online"]
+    assert online.enabled is False
+    assert online.type == "openai"
+    assert online.api_key_env == "OPENAI_API_KEY"
+    assert ai.provider_config("local") is local
+
+
+def test_ai_defaults_when_flags_omitted(project):
+    path = project / "config" / "config.yaml"
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data["ai"].pop("provider", None)
+    data["ai"].pop("fallback", None)
+    data["ai"]["providers"]["local"].pop("enabled", None)
+    data["ai"]["providers"]["online"].pop("enabled", None)
+    path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    cfg = load_config(path)
+    assert cfg.ai.provider == "local"
+    assert cfg.ai.fallback is None
+    assert cfg.ai.providers["local"].enabled is True
+    assert cfg.ai.providers["online"].enabled is False
+
+
+def test_reject_fallback_to_disabled_provider(mutate_cfg):
+    with pytest.raises(ConfigError, match="fallback"):
+        mutate_cfg(lambda d: d["ai"].__setitem__("fallback", "online"))
+
+
+def test_reject_unknown_ai_provider(mutate_cfg):
+    with pytest.raises(ConfigError, match="provider"):
+        mutate_cfg(lambda d: d["ai"].__setitem__("provider", "nope"))
+
+
+def test_reject_unknown_ai_fallback(mutate_cfg):
+    with pytest.raises(ConfigError, match="fallback"):
+        mutate_cfg(lambda d: d["ai"].__setitem__("fallback", "nope"))
+
+
+def test_reject_online_provider_without_key_env(mutate_cfg):
+    def mutate(data):
+        data["ai"]["providers"]["online"]["api_key_env"] = ""
+
+    with pytest.raises(ConfigError, match="api_key_env"):
+        mutate_cfg(mutate)
+
+
+def test_reject_bad_ai_provider_type(mutate_cfg):
+    def mutate(data):
+        data["ai"]["providers"]["local"]["type"] = "foo"
+
+    with pytest.raises(ConfigError, match="type"):
+        mutate_cfg(mutate)
+
+
+def test_legacy_flat_ai_config_still_loads(project):
+    path = project / "config" / "config.yaml"
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data["ai"] = {
+        "enabled": True,
+        "base_url": "https://legacy.test/v1",
+        "model": "legacy-model",
+        "api_key_env": "LEGACY_KEY",
+        "timeout_seconds": 12,
+    }
+    path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    cfg = load_config(path)
+    provider = cfg.ai.providers["online"]
+    assert cfg.ai.provider == "online"
+    assert provider.enabled is True
+    assert provider.model == "legacy-model"
+    assert provider.base_url == "https://legacy.test/v1"
+    assert provider.api_key_env == "LEGACY_KEY"
+    assert provider.timeout_seconds == 12
+
+
 def test_relative_paths_resolve_against_project_root(tmp_cfg, project):
     assert tmp_cfg.storage.db == (project / "data" / "jobbot.sqlite3").resolve()
     assert tmp_cfg.platform("boss").selectors == (

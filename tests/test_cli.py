@@ -104,3 +104,28 @@ def test_doctor_prints_config(tmp_cfg, capsys):
     assert "孙文昆" in out
     assert "21 年经验" in out
     assert "大连" in out
+
+
+def test_ai_switch_off(tmp_cfg, capsys):
+    code, out, err = run_cli(capsys, "--config", str(tmp_cfg.path), "--ai", "off", "doctor")
+    assert code in (0, 2), err
+    assert "AI：已关闭" in out
+
+
+def test_ai_switch_local_enables_provider(tmp_cfg, capsys):
+    code, out, err = run_cli(capsys, "--config", str(tmp_cfg.path), "--ai", "local", "doctor")
+    assert code in (0, 2), err
+    assert "选择：local" in out
+
+
+def test_ai_switch_online_enables_disabled_provider(tmp_cfg, capsys):
+    code, out, err = run_cli(capsys, "--config", str(tmp_cfg.path), "--ai", "online", "doctor")
+    assert code in (0, 2), err
+    assert "选择：online" in out
+    assert "未设置 OPENAI_API_KEY" in out
+
+
+def test_ai_switch_unknown_provider(tmp_cfg, capsys):
+    code, _, err = run_cli(capsys, "--config", str(tmp_cfg.path), "--ai", "nope", "doctor")
+    assert code == 2
+    assert "未知 AI provider" in err

@@ -7,6 +7,22 @@ from .config import Profile
 from .models import Job, MatchResult
 
 _PLACEHOLDER_RE = re.compile(r"\{[^}]*\}|\[[^\]]*\]|XX+|xx+|公司名称|岗位名称|职位名称")
+_SENTENCE_ENDS = ("。", "！", "？", "；")
+_CLAUSE_ENDS = ("，", "、", ",", " ")
+
+
+def truncate_text(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    window = text[:max_chars]
+    threshold = max(1, max_chars // 4)
+    sentence = max(window.rfind(p) for p in _SENTENCE_ENDS)
+    if sentence >= threshold:
+        return window[: sentence + 1]
+    clause = max(window.rfind(p) for p in _CLAUSE_ENDS)
+    if clause >= threshold:
+        return window[:clause].rstrip("，,；;、 ") + "。"
+    return window[: max_chars - 1].rstrip("，,；;、 ") + "。"
 
 
 @dataclass
@@ -43,7 +59,7 @@ def template_greeting(
         if len(text) <= max_chars:
             return text
     text = build(0, title[:16])
-    return text[: max_chars - 1].rstrip("，,；; ") + "。"
+    return truncate_text(text, max_chars)
 
 
 def validate_greeting(
@@ -62,7 +78,7 @@ def validate_greeting(
     if not any(s.casefold() in cleaned.casefold() for s in profile.all_skills):
         return False, cleaned, "未包含任何简历技能"
     if len(cleaned) > max_chars:
-        cleaned = cleaned[: max_chars - 1].rstrip("，,；; ") + "。"
+        cleaned = truncate_text(cleaned, max_chars)
     return True, cleaned, ""
 
 

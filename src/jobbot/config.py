@@ -43,14 +43,51 @@ class SearchConfig:
 
 
 @dataclass(frozen=True)
+class AIProviderConfig:
+    name: str
+    type: str = "openai"
+    enabled: bool = True
+    base_url: str = ""
+    model: str = ""
+    api_key_env: str = ""
+    timeout_seconds: float = 30.0
+    keep_alive: str = "5m"
+    num_ctx: int = 4096
+    thinking_budget: int = 512
+    think: bool = False
+
+
+def _default_ai_providers() -> dict[str, AIProviderConfig]:
+    return {
+        "online": AIProviderConfig(
+            name="online",
+            type="openai",
+            base_url="https://api.openai.com/v1",
+            model="gpt-4o-mini",
+            api_key_env="OPENAI_API_KEY",
+            timeout_seconds=30.0,
+        )
+    }
+
+
+@dataclass(frozen=True)
 class AIConfig:
     enabled: bool = True
-    base_url: str = "https://api.openai.com/v1"
-    model: str = "gpt-4o-mini"
-    api_key_env: str = "OPENAI_API_KEY"
-    timeout_seconds: float = 30.0
+    provider: str = "online"
+    fallback: str | None = None
+    providers: dict[str, AIProviderConfig] = field(default_factory=_default_ai_providers)
     max_greeting_chars: int = 120
     use_for_scoring: bool = True
+
+    def provider_config(self, name: str | None = None) -> AIProviderConfig:
+        target = name or self.provider
+        if target not in self.providers:
+            raise ConfigError(f"未知 AI provider：{target}；已配置：{', '.join(self.providers) or '无'}")
+        return self.providers[target]
+
+    @property
+    def selected_provider(self) -> AIProviderConfig:
+        return self.provider_config()
 
 
 @dataclass(frozen=True)
@@ -263,17 +300,102 @@ def _parse_search(data: dict[str, Any]) -> SearchConfig:
     )
 
 
+def _parse_ai_provider(name: str, value: Any) -> AIProviderConfig:
+    label = f"config.ai.providers.{name}"
+    raw = _mapping(value, label)
+    kind = str(raw.get("type", "openai")).strip().lower()
+    if kind not in ("ollama", "openai"):
+        raise ConfigError(f"{label}.type 只支持 ollama/openai")
+    default_base = "http://127.0.0.1:11434" if kind == "ollama" else "https://api.openai.com/v1"
+    default_model = "deepseek-r1:8b" if kind == "ollama" else "gpt-4o-mini"
+    base_url = _str(raw, "base_url", label, default_base).rstrip("/")
+    model = _str(raw, "model", label, default_model)
+    key_env = str(raw.get("api_key_env", "")).strip()
+    if kind == "openai" and not key_env:
+        raise ConfigError(f"{label}.api_key_env 必须填写在线服务的 Key 环境变量")
+    return AIProviderConfig(
+        name=name,
+        type=kind,
+        enabled=_bool(raw, "enabled", label, kind == "ollama"),
+        base_url=base_url,
+        model=model,
+        api_key_env=key_env,
+        timeout_seconds=_float(
+            raw, "timeout_seconds", label, 300.0 if kind == "ollama" else 30.0, minimum=1
+        ),
+        keep_alive=str(raw.get("keep_alive", "5m")).strip() or "5m",
+        num_ctx=_int(raw, "num_ctx", label, 4096, minimum=512),
+        thinking_budget=_int(raw, "thinking_budget", label, 512, minimum=0),
+        think=_bool(raw, "think", label, False),
+    )
+
+
 def _parse_ai(data: dict[str, Any]) -> AIConfig:
     raw = _mapping(data.get("ai", {}), "config.ai")
     max_greeting = _int(raw, "max_greeting_chars", "config.ai", default=120, minimum=20)
+    enabled = _bool(raw, "enabled", "config.ai", True)
+    use_for_scoring = _bool(raw, "use_for_scoring", "config.ai", True)
+
+    providers_raw = raw.get("providers")
+    if providers_raw is not None:
+        providers = {
+            str(name): _parse_ai_provider(str(name), value)
+            for name, value in _mapping(providers_raw, "config.ai.providers").items()
+        }
+    else:
+        base_url = _str(raw, "base_url", "config.ai", "https://api.openai.com/v1")
+        model = _str(raw, "model", "config.ai", "gpt-4o-mini")
+        key_env = _str(raw, "api_key_env", "config.ai", "OPENAI_API_KEY")
+        providers = {
+            "online": AIProviderConfig(
+                name="online",
+                type="openai",
+                base_url=base_url.rstrip("/"),
+                model=model,
+                api_key_env=key_env,
+                timeout_seconds=_float(raw, "timeout_seconds", "config.ai", 30.0, minimum=1),
+            )
+        }
+    if not providers:
+        raise ConfigError("config.ai.providers 至少配置一个 provider")
+
+    enabled_providers = [name for name, provider in providers.items() if provider.enabled]
+    if "local" in enabled_providers:
+        default_provider = "local"
+    elif enabled_providers:
+        default_provider = enabled_providers[0]
+    elif "online" in providers:
+        default_provider = "online"
+    else:
+        default_provider = next(iter(providers))
+    provider = str(raw.get("provider", default_provider)).strip()
+    if provider not in providers:
+        raise ConfigError(
+            f"config.ai.provider={provider} 未找到；已配置：{', '.join(providers)}"
+        )
+
+    fallback_value = raw.get("fallback")
+    fallback: str | None = None
+    if fallback_value not in (None, "", False):
+        fallback = str(fallback_value).strip()
+        if fallback not in providers:
+            raise ConfigError(
+                f"config.ai.fallback={fallback} 未找到；已配置：{', '.join(providers)}"
+            )
+        if not providers[fallback].enabled:
+            raise ConfigError(
+                f"config.ai.fallback={fallback} 已在配置中关闭（enabled: false）"
+            )
+        if fallback == provider:
+            fallback = None
+
     return AIConfig(
-        enabled=_bool(raw, "enabled", "config.ai", True),
-        base_url=_str(raw, "base_url", "config.ai", "https://api.openai.com/v1"),
-        model=_str(raw, "model", "config.ai", "gpt-4o-mini"),
-        api_key_env=_str(raw, "api_key_env", "config.ai", "OPENAI_API_KEY"),
-        timeout_seconds=_float(raw, "timeout_seconds", "config.ai", 30.0, minimum=1),
+        enabled=enabled,
+        provider=provider,
+        fallback=fallback,
+        providers=providers,
         max_greeting_chars=max_greeting,
-        use_for_scoring=_bool(raw, "use_for_scoring", "config.ai", True),
+        use_for_scoring=use_for_scoring,
     )
 
 

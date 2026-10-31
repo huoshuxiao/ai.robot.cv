@@ -35,9 +35,13 @@ jobbot demo
 真实使用：
 
 ```bash
-# 1) 可选：配置 AI（不配也能用，自动降级为规则+模板）
+# 1) AI 默认使用本机 Ollama 的 deepseek-r1:8b（本地开、在线关）
+# 先自检并实测一次本地推理（测试完会自动卸载模型）
+jobbot doctor --ai-test
+
+# 可选：临时改用在线模型（需先设置 Key；本行会临时启用 online）
 export OPENAI_API_KEY=sk-...
-# 也支持 DeepSeek / 通义等 OpenAI 兼容服务，改 config.yaml 的 ai.base_url / model
+jobbot --ai online plan
 
 # 2) 首次扫码登录，登录态保存在 data/browser/boss
 jobbot login
@@ -70,7 +74,7 @@ jobbot run --yes
 
 | 命令 | 作用 |
 | --- | --- |
-| `jobbot doctor [--live]` | 自检配置、简历、台账、浏览器、AI Key；`--live` 额外打开浏览器检查登录态 |
+| `jobbot doctor [--live] [--ai-test]` | 自检配置、简历、台账、浏览器、AI provider；`--live` 检查登录态，`--ai-test` 真实调用一次 AI 并报告延迟 |
 | `jobbot login` | 打开有头浏览器扫码登录，登录态持久化到本地 |
 | `jobbot plan [--limit N]` | 搜索并生成投递计划（只读，不发送） |
 | `jobbot apply --plan <文件或 run_id> [--yes]` | 执行计划；默认逐条确认，`--yes` 全部发送 |
@@ -78,7 +82,7 @@ jobbot run --yes
 | `jobbot report [--date YYYY-MM-DD]` | 输出当日台账并写 Markdown 日报 |
 | `jobbot demo` | 用 `examples/sample_jobs.json` 离线跑通全流程 |
 
-全局参数：`--config`（默认 `config/config.yaml`）、`--db`（覆盖台账路径）、`-v`。
+全局参数：`--config`（默认 `config/config.yaml`）、`--db`（覆盖台账路径）、`--ai local|online|off`（覆盖 AI provider）、`-v`。
 
 退出码：`0` 成功、`2` 配置/参数错误、`3` 需要登录、`4` 页面结构/适配器错误、`5` 有条目失败、`6` 触发验证码或风控、`130` 中断。
 
@@ -107,21 +111,68 @@ platforms:
 | `defaults.min_score` | 进入计划的最低分（0-100，默认 60） |
 | `defaults.min/max_interval_seconds` | 两次发送之间的随机间隔（默认 20-45 秒） |
 | `defaults.headless` | 是否无头运行；建议首次保持 `false` 便于观察 |
-| `ai.enabled` | 是否启用 AI；没有 Key 时自动降级 |
-| `ai.base_url / model / api_key_env` | OpenAI 兼容接口、模型名、Key 所在环境变量 |
+| `ai.provider` | 默认 `local`（Ollama）；可改为 `online` |
+| `ai.fallback` | 默认 `null`（不回退）；回退目标必须 `enabled: true` |
+| `ai.providers.local.enabled` | 默认 `true`（本地开） |
+| `ai.providers.online.enabled` | 默认 `false`（在线关） |
+| `ai.providers.local.*` | Ollama 地址/模型/超时/上下文/思考预算；默认 `deepseek-r1:8b` |
+| `ai.providers.online.*` | OpenAI 兼容地址/模型/Key 环境变量 |
+| `ai.use_for_scoring` | AI 精排；本地 8B CPU 默认关闭（详见第 5 节） |
 
 切换地区/平台/数量只改 YAML，无需改代码。51job、智联的配置骨架已在文件中以注释给出，实现对应适配器后把 `enabled` 改为 `true` 即可。
 
 ## 5. AI 与匹配
 
+### 5.1 本地 / 在线两种 provider
+
+默认策略：**本地开，在线关**。
+
+```yaml
+ai:
+  provider: local
+  fallback: null
+  providers:
+    local:
+      enabled: true
+    online:
+      enabled: false
+```
+
+| provider | 默认 | 协议 | 默认模型 | 需要 Key | 适用 |
+| --- | --- | --- | --- | --- | --- |
+| `local` | 开 | Ollama 原生 `/api/chat` + `/api/tags` | `deepseek-r1:8b` | 否 | 本机 Ollama，数据不出本机 |
+| `online` | 关 | OpenAI 兼容 `/chat/completions` | `gpt-4o-mini` | 是（`OPENAI_API_KEY`） | 更快，或本地不可用时回退 |
+
+选择优先级：命令行 `--ai local|online|off` > `config.yaml` 的 `ai.provider`。`--ai online` 会在本次运行中临时把 online 置为启用；显式写 `--ai` 时只使用该 provider，不再回退。想让在线长期可用，把 `online.enabled` 改成 `true`，并设置 `fallback: online` 才会自动回退。
+
+```bash
+jobbot --ai local doctor          # 查看本地 provider（默认）
+jobbot --ai online plan           # 本次临时启用在线模型
+jobbot --ai off plan              # 本次完全关闭 AI
+```
+
+### 5.2 匹配与招呼语
+
 **两段式匹配**：
 
 1. 规则评分：技能命中（核心 8 分/项、熟悉 4 分/项，上限 40）、Java 后端标题、薪资区间、经验要求、城市、详情完整度；命中排除词直接 0 分。
-2. AI 精排：启用且有 Key 时，模型返回 `fit/reasons/risks`，最终分 = 规则分 × 70% + AI 分 × 30%，避免模型单点失控。
+2. AI 精排（`ai.use_for_scoring: true` 时）：模型返回 `fit/reasons/risks`，最终分 = 规则分 × 70% + AI 分 × 30%，避免模型单点失控。
 
-**打招呼语**：AI 只能使用 `config/profile.yaml` 中的事实，输出 120 字以内正文；后置校验拒绝空文本、占位符、缺少姓名或技能的内容，不合格自动回退模板。
+**打招呼语**：AI 只能使用 `config/profile.yaml` 中的事实，输出 120 字以内正文；后置校验拒绝空文本、占位符、缺少姓名或技能的内容，超长时按句号截断，不合格自动回退模板。
 
-**降级**：无 Key、超时、非 200、JSON 解析失败都会记录 warning 并继续使用规则分与模板，不中断投递。
+**降级**：Ollama 不可达、模型未安装、在线无 Key、超时、返回为空或 JSON 解析失败，都会记录 warning 并继续使用规则分与模板，不中断投递。
+
+### 5.3 本地 deepseek-r1:8b 的实测性能
+
+本机 Ollama 已配置 `OLLAMA_NUM_GPUS=0`（纯 CPU），实测：
+
+| 项目 | 结果 |
+| --- | --- |
+| `doctor --ai-test`（冷启动 + 16 token 回答） | 成功，约 **64–159 秒**（受磁盘缓存影响），返回 `OK`，测试后自动卸载 |
+| `plan --fixture --limit 1` 端到端 | 成功，`greeting_source: ai`，招呼语 115 字，总耗时约 **152 秒** |
+| 一次评分调用（thinking_budget=512） | 未完成：R1 思考超过预算，返回空；因此本地默认关闭 AI 精排 |
+
+R1 会先输出一段“思考”内容，`think: false` 在本机版本上未能完全抑制。`thinking_budget` 会为最终答案额外预留 token；本地默认 512，足够写招呼语。若想在本地启用 AI 精排，需要把 `use_for_scoring` 改为 true，并同时增大 `thinking_budget`（约 2048）和 `timeout_seconds`（约 900），单条可能数分钟；更实用的是改 true 后用 `--ai online` 做精排，或保持本地 `use_for_scoring: false`。
 
 Prompt 中职位描述被包裹在 `<jd>...</jd>` 并明确标注为数据，防止 JD 中的文字被当成指令。
 
@@ -152,7 +203,7 @@ BOSS 的「投递」在本工具中实现为「立即沟通 + 发送打招呼」
 config/          config.yaml / profile.yaml / selectors.boss.yaml
 src/jobbot/      源码（CLI、匹配、AI、平台适配器、台账、报告）
 examples/        离线演示职位数据
-tests/           77 个 pytest 用例（含 Playwright 浏览器级联调）
+tests/           105 个 pytest 用例（含 Playwright 浏览器级联调、AI HTTP 回环）
 docs/            设计方案.md
 data/            运行时数据（已忽略）
   jobbot.sqlite3   投递台账（去重、状态、每日计数）
@@ -166,7 +217,10 @@ data/            运行时数据（已忽略）
 ## 9. 验证状态
 
 - 离线流水线：`jobbot demo` 实跑通过，选中 5 个职位，模拟投递 5 条，台账去重复核 `6/9`，日报生成。
-- 自动化测试：`python -m pytest` → **77 passed**。覆盖配置校验、薪资/经验解析、评分与排除词、台账去重与配额、招呼语校验、AI 重试与降级、BOSS HTML 解析与登录/风控检测、计划限额、CLI 端到端（demo / run / apply / report）。
+- 自动化测试：`python -m pytest` → **105 passed**。覆盖配置校验、薪资/经验解析、评分与排除词、台账去重与配额、招呼语校验与截断、AI 双协议/真实 HTTP 回环/探测/回退/重试/provider 默认开关与启停、`--ai` 切换、BOSS HTML 解析与登录/风控检测、计划限额、CLI 端到端（demo / run / apply / report）。
+- 默认策略实测：`jobbot doctor` → `local` 可用、`online` 显示「已在配置中关闭」；`jobbot --ai online doctor` → 选择 online 并临时启用（本机无 Key，显示未设置 Key）。
+- AI 本地实测：`jobbot doctor --ai-test` → 本地 `deepseek-r1:8b` 成功返回 `OK`（64.4–158.6 秒，随冷启动/缓存变化），测试后自动卸载；`plan --fixture --limit 1` → 生成计划且 `greeting_source: ai`（151.7 秒，招呼语 115 字）。
+- AI 在线：本机未设置真实 `OPENAI_API_KEY`，未向外部服务发请求；用本地 HTTP mock 验证了 `/chat/completions` 请求体与 `Bearer` 鉴权，失败回退由单测覆盖。
 - 适配器浏览器级联调：用本地合成站点驱动真实 Playwright + 系统 Chromium，验证「搜索 → 解析职位卡 → 拉详情 → 点击立即沟通 → 填招呼语 → 回车发送 → 消息气泡确认」整条链路。
 - 真实 BOSS 投递：需要你的账号扫码登录后才能验证。代码按当前页面结构编写选择器，首次使用请先 `jobbot plan` 审阅；若页面改版，按 `data/debug/` 现场更新 `selectors.boss.yaml`。本仓库不包含账号凭证，也不会自动绕过平台验证。
 - 真实浏览器冒烟测试（本机）：系统 Chromium 156 可由 Playwright 启动并访问 BOSS 首页；新开的无登录态会话被 BOSS 重定向到 `/web/passport/zp/verify.html` 安全验证页，`check_login` 正确返回未登录并提示人工登录，工具没有硬闯验证。真实搜索与发送必须在完成人工登录后验证。
@@ -182,7 +236,10 @@ data/            运行时数据（已忽略）
 | 找不到「立即沟通」按钮 | 页面改版，按 `data/debug/` 更新 `config/selectors.boss.yaml` |
 | 发送后提示“未确认” | 到 BOSS 聊天页人工核对；台账记为 `unknown`，7 天内不会重复投递 |
 | 没有入选职位 | 降低 `defaults.min_score`、增加关键词，或查看计划中的跳过原因 |
-| AI 未生效 | 检查环境变量名与 `ai.api_key_env` 是否一致、`ai.enabled` 是否为 true |
+| `Ollama 不可达` | `systemctl status ollama`；`curl http://127.0.0.1:11434/api/tags` |
+| `未找到模型 deepseek-r1:8b` | `ollama pull deepseek-r1:8b`，再 `jobbot doctor --ai-test` |
+| 本地 AI 很慢 | 本机为纯 CPU 推理，单条招呼语约 2-3 分钟属正常；可 `--ai online`，或保持 `ai.use_for_scoring: false` |
+| AI 未生效 | 先 `jobbot doctor --ai-test`；本地看 provider 是否可用；在线需设置 Key，并把 `online.enabled` 改 true 或本次加 `--ai online` |
 
 ## 11. 设计文档
 

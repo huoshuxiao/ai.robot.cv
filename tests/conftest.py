@@ -35,6 +35,7 @@ def project(tmp_path):
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     data["defaults"]["min_interval_seconds"] = 0
     data["defaults"]["max_interval_seconds"] = 0
+    data["ai"]["enabled"] = False
     path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
     return dst
 

@@ -250,9 +250,45 @@ def cmd_doctor(args, cfg: Config, profile: Profile) -> int:
         f"发送间隔：{cfg.defaults.min_interval_seconds}-{cfg.defaults.max_interval_seconds}s"
     )
 
-    ai_client = AIClient(cfg.ai, profile)
-    state = "启用" if ai_client.enabled else "降级为规则模式（未开启或未设置 Key）"
-    print(f"AI：{state} · model={cfg.ai.model} · key_env={cfg.ai.api_key_env} · base_url={cfg.ai.base_url}")
+    print("\n== AI ==")
+    if not cfg.ai.enabled:
+        print("AI：已关闭（使用规则 + 模板）")
+    else:
+        print(
+            f"选择：{cfg.ai.provider}　回退：{cfg.ai.fallback or '无'}"
+            f"　AI 精排：{'开' if cfg.ai.use_for_scoring else '关'}"
+        )
+        ai_client = AIClient(cfg.ai, profile)
+        statuses = ai_client.statuses()
+        for name, provider in cfg.ai.providers.items():
+            status = statuses[name]
+            state = (
+                f"可用（{status.detail}）"
+                if status.ok
+                else f"不可用：{status.detail}"
+            )
+            print(
+                f"  {name}: {provider.type}/{provider.model} @ {provider.base_url} · {state}"
+            )
+        if args.ai_test:
+            print("推理测试中（本地模型冷启动可能需要约 2 分钟）……")
+            status = ai_client.prepare()
+            print(f"生效 provider：{ai_client.last_provider or '无'} · {status.detail}")
+            ai_ok = False
+            if status.ok:
+                ok, text, elapsed = ai_client.ping()
+                ai_ok = ok
+                print(
+                    f"推理测试：{'成功' if ok else '失败'} · {elapsed:.1f}s · "
+                    f"返回：{text[:80]!r}"
+                )
+                if not ok:
+                    print("提示：本地模型思考过长，可增大 thinking_budget 或改用 --ai online。")
+            unloaded = ai_client.unload_all_local()
+            if unloaded:
+                print(f"已卸载本地模型：{'、'.join(unloaded)}")
+            if not ai_ok:
+                return EXIT_CONFIG
 
     print("\n== 简历 ==")
     print(
@@ -304,6 +340,19 @@ def cmd_login(args, cfg: Config, profile: Profile) -> int:
         adapter.close()
 
 
+def _prepare_ai(cfg: Config, profile: Profile, logger: logging.Logger) -> AIClient:
+    client = AIClient(cfg.ai, profile, logger)
+    if not cfg.ai.enabled:
+        logger.info("AI 已关闭，使用规则评分 + 模板招呼语")
+        return client
+    status = client.prepare()
+    if status.ok:
+        logger.info("AI：%s · %s · %s", status.provider, status.model, status.detail)
+    else:
+        logger.warning("AI 不可用（%s），本次使用规则评分 + 模板招呼语", status.detail)
+    return client
+
+
 def cmd_plan(args, cfg: Config, profile: Profile) -> int:
     logger = logging.getLogger("jobbot")
     platform_name = cfg.platform(args.platform).name
@@ -313,9 +362,7 @@ def cmd_plan(args, cfg: Config, profile: Profile) -> int:
         if not adapter.check_login():
             print("未登录或登录态失效，请先运行：jobbot login", file=sys.stderr)
             return EXIT_LOGIN
-        ai_client = AIClient(cfg.ai, profile, logger)
-        if cfg.ai.enabled and not ai_client.enabled:
-            logger.info("未设置 %s，本次使用规则评分 + 模板招呼语", cfg.ai.api_key_env)
+        ai_client = _prepare_ai(cfg, profile, logger)
         planner = Planner(cfg, profile, storage, adapter, ai_client, logger)
         plan, path = planner.build_plan(platform_name, args.limit)
         print(format_plan(plan))
@@ -355,7 +402,7 @@ def cmd_run(args, cfg: Config, profile: Profile) -> int:
         if not adapter.check_login():
             print("未登录或登录态失效，请先运行：jobbot login", file=sys.stderr)
             return EXIT_LOGIN
-        ai_client = AIClient(cfg.ai, profile, logger)
+        ai_client = _prepare_ai(cfg, profile, logger)
         planner = Planner(cfg, profile, storage, adapter, ai_client, logger)
         plan, path = planner.build_plan(platform_name, args.limit)
         print(format_plan(plan))
@@ -453,11 +500,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--config", default="config/config.yaml", help="配置文件路径")
     parser.add_argument("--db", default=None, help="覆盖台账数据库路径")
+    parser.add_argument(
+        "--ai", default=None, metavar="PROVIDER", help="覆盖 AI provider：local / online / off"
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="输出调试日志")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("doctor", help="自检配置、浏览器、登录态")
     p.add_argument("--live", action="store_true", help="打开浏览器检查登录态")
+    p.add_argument("--ai-test", action="store_true", help="实际调用一次 AI 并报告延迟")
     p.set_defaults(func=cmd_doctor)
 
     p = sub.add_parser("login", help="扫码登录并持久化登录态")
@@ -501,6 +552,30 @@ def main(argv: list[str] | None = None) -> int:
         cfg = load_config(args.config)
         if args.db:
             cfg = replace(cfg, storage=replace(cfg.storage, db=Path(args.db).expanduser().resolve()))
+        if args.ai:
+            target = args.ai.strip()
+            if target.lower() == "off":
+                cfg = replace(cfg, ai=replace(cfg.ai, enabled=False))
+            elif target not in cfg.ai.providers:
+                print(
+                    f"配置错误：未知 AI provider {target}；"
+                    f"可用：{', '.join(cfg.ai.providers)}",
+                    file=sys.stderr,
+                )
+                return EXIT_CONFIG
+            else:
+                providers = dict(cfg.ai.providers)
+                providers[target] = replace(providers[target], enabled=True)
+                cfg = replace(
+                    cfg,
+                    ai=replace(
+                        cfg.ai,
+                        enabled=True,
+                        provider=target,
+                        fallback=None,
+                        providers=providers,
+                    ),
+                )
         profile = load_profile(cfg.profile_path)
     except ConfigError as exc:
         print(f"配置错误：{exc}", file=sys.stderr)

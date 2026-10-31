@@ -63,6 +63,15 @@ def test_validate_truncates_long_text(profile):
     ok, cleaned, _ = validate_greeting(text, profile, make_job(), max_chars=60)
     assert ok
     assert len(cleaned) <= 60
+    assert cleaned.endswith("。")
+
+
+def test_validate_truncates_at_sentence_boundary(profile):
+    text = "您好，我是孙文昆，21年Java后端经验。" + "补充说明" * 20 + "。"
+    ok, cleaned, _ = validate_greeting(text, profile, make_job(), max_chars=60)
+    assert ok
+    assert len(cleaned) <= 60
+    assert cleaned == "您好，我是孙文昆，21年Java后端经验。"
 
 
 def test_build_greeting_uses_valid_ai_text(profile):
