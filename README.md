@@ -170,9 +170,9 @@ jobbot --ai off plan              # 本次完全关闭 AI
 | --- | --- |
 | `doctor --ai-test`（冷启动 + 16 token 回答） | 成功，约 **64–159 秒**（受磁盘缓存影响），返回 `OK`，测试后自动卸载 |
 | `plan --fixture --limit 1` 端到端 | 成功，`greeting_source: ai`，招呼语 115 字，总耗时约 **152 秒** |
-| 一次评分调用（thinking_budget=512） | 未完成：R1 思考超过预算，返回空；因此本地默认关闭 AI 精排 |
+| 一次评分调用（budget=2048，ctx=6144） | **成功**，返回合法 JSON：`fit=96` + 3 条理由 + 3 条风险，耗时 **500.7 秒**（约 8.3 分钟） |
 
-R1 会先输出一段“思考”内容，`think: false` 在本机版本上未能完全抑制。`thinking_budget` 会为最终答案额外预留 token；本地默认 512，足够写招呼语。若想在本地启用 AI 精排，需要把 `use_for_scoring` 改为 true，并同时增大 `thinking_budget`（约 2048）和 `timeout_seconds`（约 900），单条可能数分钟；更实用的是改 true 后用 `--ai online` 做精排，或保持本地 `use_for_scoring: false`。
+R1 会先输出一段“思考”内容，`think: false` 在本机版本上未能完全抑制。`thinking_budget` 会为最终答案额外预留 token；当前本地配置为 `budget=2048`、`ctx=6144`、`timeout=900s`，评分已可完成，但单条约 8 分钟。因此 `use_for_scoring` 仍默认 `false`；需要本地精排时改为 `true`，并注意一次计划会对多个候选逐一评分，耗时可能接近一小时。更实用的是改 true 后用 `--ai online` 做精排。
 
 Prompt 中职位描述被包裹在 `<jd>...</jd>` 并明确标注为数据，防止 JD 中的文字被当成指令。
 
@@ -220,6 +220,7 @@ data/            运行时数据（已忽略）
 - 自动化测试：`python -m pytest` → **105 passed**。覆盖配置校验、薪资/经验解析、评分与排除词、台账去重与配额、招呼语校验与截断、AI 双协议/真实 HTTP 回环/探测/回退/重试/provider 默认开关与启停、`--ai` 切换、BOSS HTML 解析与登录/风控检测、计划限额、CLI 端到端（demo / run / apply / report）。
 - 默认策略实测：`jobbot doctor` → `local` 可用、`online` 显示「已在配置中关闭」；`jobbot --ai online doctor` → 选择 online 并临时启用（本机无 Key，显示未设置 Key）。
 - AI 本地实测：`jobbot doctor --ai-test` → 本地 `deepseek-r1:8b` 成功返回 `OK`（64.4–158.6 秒，随冷启动/缓存变化），测试后自动卸载；`plan --fixture --limit 1` → 生成计划且 `greeting_source: ai`（151.7 秒，招呼语 115 字）。
+- 本地评分实测（`budget=2048`、`ctx=6144`）：成功返回合法 JSON，`fit=96`，耗时 **500.7 秒**；默认仍关闭 `use_for_scoring`，避免每日计划耗时过长。
 - AI 在线：本机未设置真实 `OPENAI_API_KEY`，未向外部服务发请求；用本地 HTTP mock 验证了 `/chat/completions` 请求体与 `Bearer` 鉴权，失败回退由单测覆盖。
 - 适配器浏览器级联调：用本地合成站点驱动真实 Playwright + 系统 Chromium，验证「搜索 → 解析职位卡 → 拉详情 → 点击立即沟通 → 填招呼语 → 回车发送 → 消息气泡确认」整条链路。
 - 真实 BOSS 投递：需要你的账号扫码登录后才能验证。代码按当前页面结构编写选择器，首次使用请先 `jobbot plan` 审阅；若页面改版，按 `data/debug/` 现场更新 `selectors.boss.yaml`。本仓库不包含账号凭证，也不会自动绕过平台验证。

@@ -267,8 +267,15 @@ def cmd_doctor(args, cfg: Config, profile: Profile) -> int:
                 if status.ok
                 else f"不可用：{status.detail}"
             )
+            params = ""
+            if provider.type == "ollama":
+                params = (
+                    f" [budget={provider.thinking_budget}"
+                    f" ctx={provider.num_ctx}"
+                    f" timeout={provider.timeout_seconds:g}s]"
+                )
             print(
-                f"  {name}: {provider.type}/{provider.model} @ {provider.base_url} · {state}"
+                f"  {name}: {provider.type}/{provider.model} @ {provider.base_url} · {state}{params}"
             )
         if args.ai_test:
             print("推理测试中（本地模型冷启动可能需要约 2 分钟）……")

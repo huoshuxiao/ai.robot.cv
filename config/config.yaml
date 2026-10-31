@@ -42,9 +42,8 @@ ai:
   provider: local                         # local（Ollama）| online（OpenAI 兼容）
   fallback: null                          # 在线默认关闭，不回退；启用 online 后可改为 online
   max_greeting_chars: 120
-  use_for_scoring: false                  # 本地 8B CPU 做一次评分可能超过 5 分钟；默认只用 AI 写招呼语。
-                                          # 需要 AI 精排：改 true，并把 local.thinking_budget 提到 2048、
-                                          # local.timeout_seconds 提到 900（或改 true 后用 --ai online）
+  use_for_scoring: false                  # 本地评分已验证可完成（单条约 8 分钟）；默认只用 AI 写招呼语。
+                                          # 需要 AI 精排：改 true（thinking_budget=2048、timeout_seconds=900 已配好）
 
   providers:
     local:
@@ -53,10 +52,10 @@ ai:
       base_url: http://127.0.0.1:11434
       model: deepseek-r1:8b
       api_key_env: ""                     # Ollama 无需 Key
-      timeout_seconds: 600                # 冷启动/思考较慢，留足时间
+      timeout_seconds: 900                # 评分/思考较慢，留足时间
       keep_alive: 5m
-      num_ctx: 4096
-      thinking_budget: 512                # R1 先输出思考内容，为最终答案预留 token
+      num_ctx: 6144
+      thinking_budget: 2048               # R1 先输出思考内容，为最终答案预留 token
       think: false
 
     online:

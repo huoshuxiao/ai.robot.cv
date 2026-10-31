@@ -28,8 +28,9 @@ def test_ai_local_and_online_providers(cfg):
     assert local.type == "ollama"
     assert local.model == "deepseek-r1:8b"
     assert local.base_url == "http://127.0.0.1:11434"
-    assert local.thinking_budget == 512
-    assert local.num_ctx == 4096
+    assert local.thinking_budget == 2048
+    assert local.num_ctx == 6144
+    assert local.timeout_seconds == 900
     online = ai.providers["online"]
     assert online.enabled is False
     assert online.type == "openai"
