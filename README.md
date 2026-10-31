@@ -83,6 +83,7 @@ jobbot run --yes
 | `jobbot demo` | 用 `examples/sample_jobs.json` 离线跑通全流程 |
 | `jobbot bridge --port 8765` | 浏览器扩展的本地 AI 桥 |
 | `jobbot import-extension --file <结果 JSON>` | 把扩展发送结果导入主台账 |
+| `jobbot simulate [--fixture 文件] [--window-days N]` | 模拟投递：应用去重/评分/限额，不发送、不写台账 |
 
 全局参数：`--config`（默认 `config/config.yaml`）、`--db`（覆盖台账路径）、`--ai local|online|off`（覆盖 AI provider）、`-v`。
 
@@ -114,6 +115,7 @@ platforms:
 | `search.salary_range_k` | 期望薪资（K），与简历一致：13-26 |
 | `search.max_pages` | 每个关键词最多翻页数 |
 | `defaults.min_score` | 进入计划的最低分（0-100，默认 60） |
+| `defaults.dedupe_window_days` | 同一公司同一职位去重天数，默认 7，可配置 |
 | `defaults.min/max_interval_seconds` | 两次发送之间的随机间隔（默认 20-45 秒） |
 | `defaults.headless` | 是否无头运行；建议首次保持 `false` 便于观察 |
 | `ai.provider` | 默认 `local`（Ollama）；可改为 `online` |
@@ -206,7 +208,7 @@ BOSS 同样会拦截 Playwright 的搜索页（跳 `about:blank`），真实投�
 ```
 
 3. 在 BOSS 页面用扩展面板扫描/生成 AI 招呼语；发送时扩展选中会话、填入 contenteditable 编辑器并回车，确认 BOSS 气泡后下载结果；
-4. 自动模式：`auto_plan` 按 hash 里的城市/关键词/数量自动搜索并生成计划（不发送）；`auto_send` 读取计划逐条发送；发送结果用 `jobbot import-extension --file ~/Downloads/jobbot-auto-send-result.json` 导入主台账；
+4. 自动模式：`auto_plan` 按 hash 里的城市/关键词/数量自动搜索并生成计划（不发送），并按 `jobbot_dedupe_days`（默认 7）跳过同公司同职位；`auto_send` 读取计划逐条发送；发送结果用 `jobbot import-extension --file ~/Downloads/jobbot-auto-send-result.json` 导入主台账；
 5. 注意：点击「立即沟通」本身会先发送 BOSS 默认招呼语，AI 招呼会作为后续消息发送。要避免两条消息，可先在 BOSS「设置招呼语」中把默认招呼改成 AI 版本。
 
 真实实测（2026-10-31）：本地 AI 生成的招呼语已发送给「杭州学天教育 / 后端JAVA开发工程师（Base杭州）」，BOSS 聊天页 23:24 显示「送达」。
@@ -228,7 +230,7 @@ config/          config.yaml / profile.yaml / selectors.boss.yaml
 src/jobbot/      源码（CLI、匹配、AI、平台适配器、台账、报告、bridge）
 extension/       Chromium 扩展（BOSS 真实投递路径）
 examples/        离线演示职位数据
-tests/           119 个 pytest 用例（含 Playwright 浏览器级联调、AI HTTP 回环、登录 Cookie 检测、扩展结果导入）
+tests/           126 个 pytest 用例（含 Playwright 浏览器级联调、AI HTTP 回环、登录 Cookie 检测、扩展结果导入、模拟投递）
 docs/            设计方案.md
 data/            运行时数据（已忽略）
   jobbot.sqlite3   投递台账（去重、状态、每日计数）
@@ -242,7 +244,7 @@ data/            运行时数据（已忽略）
 ## 9. 验证状态
 
 - 离线流水线：`jobbot demo` 实跑通过，选中 3 个职位，模拟投递 3 条，台账去重复核 `4/9`，日报生成。
-- 自动化测试：`python -m pytest` → **119 passed**。覆盖配置校验、薪资/经验解析、评分与排除词、台账去重与配额、招呼语校验与截断、AI 双协议/真实 HTTP 回环/探测/回退/重试/provider 默认开关与启停、`--ai` 切换、登录 Cookie 检测、扩展结果导入（含 UTC→本地时区）、BOSS HTML 解析与登录/风控检测、计划限额、CLI 端到端（demo / run / apply / report）。
+- 自动化测试：`python -m pytest` → **126 passed**。覆盖配置校验、薪资/经验解析、评分与排除词、台账去重与配额、招呼语校验与截断、AI 双协议/真实 HTTP 回环/探测/回退/重试/provider 默认开关与启停、`--ai` 切换、登录 Cookie 检测、扩展结果导入（含 UTC→本地时区）、模拟投递、BOSS HTML 解析与登录/风控检测、计划限额、CLI 端到端（demo / run / apply / report）。
 - 默认策略实测：`jobbot doctor` → `local` 可用、`online` 显示「已在配置中关闭」；`jobbot --ai online doctor` → 选择 online 并临时启用（本机无 Key，显示未设置 Key）。
 - AI 本地实测：`jobbot doctor --ai-test` → 本地 `deepseek-r1:8b` 成功返回 `OK`（64.4–158.6 秒，随冷启动/缓存变化），测试后自动卸载；`plan --fixture --limit 1` → 生成计划且 `greeting_source: ai`（151.7 秒，招呼语 115 字）。
 - 本地评分实测（`budget=2048`、`ctx=6144`）：成功返回合法 JSON，`fit=96`，耗时 **500.7 秒**；默认仍关闭 `use_for_scoring`，避免每日计划耗时过长。
@@ -251,6 +253,7 @@ data/            运行时数据（已忽略）
 - 自动发送实测（2026-11-01）：`auto_send` 完成 3/3，扩展结果 `sent=3`；BOSS 聊天显示三个会话的 AI 招呼已送达；`jobbot import-extension` 入账 3 条（导入时将 UTC 时间转为本地时区），2026-11-01 日报「已投递 3」。
   - 证据：`data/e2e-live/auto-send-result.json`、`data/e2e-live/real-send-verified.png`、`data/reports/jobbot-report-2026-11-01-all.md`
   - 注意：每条新会话先收到 BOSS 默认招呼，再收到 AI 招呼（共 6 条消息）。
+- 模拟测试（2026-11-01）：`jobbot simulate --fixture examples/simulation_jobs.json --limit 3 --window-days 7` 实际运行；3 条“同公司同职位”因 7 天规则被拦截，2 条新岗位仅入选展示；今日已投 3/额度 3，因此“现在会发送 0”；台账前后均为 `sent=4`，未发送、未写入任何投递记录。报告：`data/simulations/sim-20261101-003909.json`。
 - AI 在线：本机未设置真实 `OPENAI_API_KEY`，未向外部服务发请求；用本地 HTTP mock 验证了 `/chat/completions` 请求体与 `Bearer` 鉴权，失败回退由单测覆盖。
 - 适配器浏览器级联调：用本地合成站点驱动真实 Playwright + 系统 Chromium，验证「搜索 → 解析职位卡 → 拉详情 → 点击立即沟通 → 填招呼语 → 回车发送 → 消息气泡确认」整条链路。
 - 真实 BOSS 链路（2026-10-31）：普通 Chromium 登录 → BOSS 聊天列表选中「杭州学天教育」→ `jobbot bridge` 用本地 `deepseek-r1:8b` 生成 AI 招呼语（source=ai，118.7 秒）→ 扩展填入并回车 → BOSS 聊天页 23:24 显示 AI 气泡「送达」；主台账/日报各 1 条。

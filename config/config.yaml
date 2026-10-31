@@ -14,12 +14,13 @@ storage:
 
 defaults:
   limit_per_run: 3          # 每次运行最多投递数（可被平台配置覆盖）
-  limit_per_day: 3          # 每日最多投递数
+  limit_per_day: 3          # 这个平台每日最多投递数
   min_score: 60             # 低于该分数不进计划
   min_interval_seconds: 20  # 两条发送之间的最小随机间隔
   max_interval_seconds: 45
   headless: false           # 默认有头，便于观察与人工接管
   page_timeout_seconds: 30
+  dedupe_window_days: 7     # 同一公司同一职位 7 天内不重复投递（可配置）
 
 search:
   keywords:

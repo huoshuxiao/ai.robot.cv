@@ -279,6 +279,9 @@
     const stored = await chrome.storage.local.get({ jobbot_results: [] });
     stored.jobbot_results.push(result);
     await chrome.storage.local.set({ jobbot_results: stored.jobbot_results });
+    if (status === "sent" && state.job) {
+      await addSentHistory(state.job);
+    }
     await chrome.storage.local.remove("pendingChat");
     await chrome.storage.local.remove("pendingGreeting");
     await chrome.runtime.sendMessage({
@@ -451,7 +454,56 @@
   const AUTO_KEY = "jobbotAutoState";
   const AUTO_SEND_KEY = "jobbotAutoSendState";
   const PREVIEW_KEY = "jobbotPreviewState";
+  const HISTORY_KEY = "jobbotSentHistory";
   let autoRunning = false;
+
+  function normText(value) {
+    return String(value || "").replace(/\s+/g, "").toLowerCase();
+  }
+
+  function sameCompanyTitle(a, b) {
+    return (
+      normText(a && a.company) === normText(b && b.company) &&
+      normText(a && a.title) === normText(b && b.title)
+    );
+  }
+
+  function withinDays(value, days) {
+    const ts = Date.parse(value || "");
+    if (!Number.isFinite(ts)) return false;
+    return Date.now() - ts <= Number(days || 7) * 86400000;
+  }
+
+  async function loadSentHistory() {
+    const stored = await chrome.storage.local.get([
+      HISTORY_KEY,
+      AUTO_SEND_KEY,
+      "jobbot_results",
+    ]);
+    const history = [...(stored[HISTORY_KEY] || [])];
+    const sendState = stored[AUTO_SEND_KEY];
+    if (sendState && Array.isArray(sendState.records)) {
+      for (const record of sendState.records) {
+        if (record.job && record.status === "sent") {
+          history.push({ job: record.job, time: record.time, status: "sent" });
+        }
+      }
+    }
+    for (const record of stored.jobbot_results || []) {
+      if (record.job && record.status === "sent") history.push(record);
+    }
+    return history;
+  }
+
+  async function addSentHistory(job) {
+    if (!job || !job.id) return;
+    const stored = await chrome.storage.local.get({ [HISTORY_KEY]: [] });
+    const history = stored[HISTORY_KEY];
+    if (!history.some((item) => item.job && sameCompanyTitle(item.job, job))) {
+      history.push({ job, time: new Date().toISOString(), status: "sent" });
+    }
+    await chrome.storage.local.set({ [HISTORY_KEY]: history.slice(-500) });
+  }
 
   function parseList(value) {
     return (value || "")
@@ -522,6 +574,7 @@
           limit: state.limit,
           queue: state.queue,
           results: state.results,
+          duplicates: state.duplicates || [],
           handled: state.handled,
           finished_at: state.finished_at,
           note: state.note || "",
@@ -580,6 +633,8 @@
           excludeTitle: parseList(
             params.get("jobbot_exclude_title") || "大模型,算法,AI"
           ),
+          dedupeDays: Number(params.get("jobbot_dedupe_days") || 7),
+          duplicates: [],
           titleKeywords: parseList(
             params.get("jobbot_title_keywords") || "Java,后端,服务端"
           ),
@@ -590,6 +645,8 @@
         setStatus("自动计划已完成");
         return;
       }
+      state.dedupeDays = state.dedupeDays || 7;
+      state.duplicates = state.duplicates || [];
       ensurePanel();
       setStatus(`自动搜索 ${state.queueIndex + 1}/${state.queue.length}`);
       const card = await waitFor(CARD, 20000);
@@ -597,11 +654,29 @@
         await advanceAutoPlan(state);
         return;
       }
+      const history = await loadSentHistory();
+      const duplicates = [];
       const candidate = qa(CARD)
         .filter(visible)
         .map(extractCardJob)
         .find((job) => {
           if (!job.id || state.handled.includes(job.id) || job.alreadyChat) return false;
+          if (
+            history.some(
+              (item) =>
+                item.job &&
+                sameCompanyTitle(item.job, job) &&
+                withinDays(item.time, state.dedupeDays)
+            )
+          ) {
+            duplicates.push({
+              job_id: job.id,
+              title: job.title,
+              company: job.company,
+              reason: `同公司同职位 ${state.dedupeDays} 天内已投递`,
+            });
+            return false;
+          }
           const haystack = `${job.title} ${job.company} ${(job.tags || []).join(" ")}`;
           if (state.exclude.some((word) => haystack.includes(word))) return false;
           if (state.excludeTitle.some((word) => job.title.includes(word))) return false;
@@ -610,6 +685,10 @@
             job.title.toLowerCase().includes(word.toLowerCase())
           );
         });
+      if (duplicates.length) {
+        state.duplicates.push(...duplicates);
+        await saveAuto(state);
+      }
       if (!candidate) {
         await advanceAutoPlan(state);
         return;
@@ -681,6 +760,7 @@
       error: error || "",
       time: new Date().toISOString(),
     });
+    if (ok) await addSentHistory(current.job);
     state.index += 1;
     state.currentJobId = null;
     await saveAutoSend(state);

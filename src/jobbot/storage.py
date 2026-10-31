@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 from contextlib import closing
 from datetime import date, datetime, timedelta
@@ -50,6 +51,22 @@ def iso(dt: datetime) -> str:
     return dt.isoformat(timespec="seconds")
 
 
+def _norm(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "")).casefold()
+
+
+def _parse_time(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=now_local().tzinfo)
+    return parsed
+
+
 class Storage:
     def __init__(self, db_path: str | Path):
         self.path = Path(db_path)
@@ -75,25 +92,52 @@ class Storage:
         self,
         platform: str,
         job_id: str,
+        company: str = "",
+        title: str = "",
+        window_days: int = 7,
         planned_ttl_days: int = 3,
-        action_ttl_days: int = 7,
     ) -> tuple[bool, str]:
-        row = self.get(platform, job_id)
-        if row is None:
-            return False, ""
-        status = row["status"]
         now = now_local()
-        if status == "sent":
-            return True, "台账显示已投递"
-        if status == "planned":
-            created = datetime.fromisoformat(row["created_at"])
-            if created >= now - timedelta(days=planned_ttl_days):
-                return True, "已有未执行的计划"
-            return False, ""
-        if status in ("requires_action", "unknown"):
-            updated = datetime.fromisoformat(row["updated_at"])
-            if updated >= now - timedelta(days=action_ttl_days):
-                return True, f"状态为 {status}，需人工确认后再投"
+        cutoff = now - timedelta(days=max(1, window_days))
+        row = self.get(platform, job_id)
+        if row is not None:
+            status = row["status"]
+            if status == "sent":
+                sent_at = _parse_time(row["sent_at"] or row["updated_at"])
+                if sent_at is not None and sent_at >= cutoff:
+                    return True, f"该职位 {window_days} 天内已投递"
+            elif status in ("requires_action", "unknown"):
+                updated = _parse_time(row["updated_at"])
+                if updated is not None and updated >= cutoff:
+                    return True, f"状态为 {status}，需人工确认后再投（{window_days} 天内）"
+            elif status == "planned":
+                created = _parse_time(row["created_at"])
+                if created is not None and created >= now - timedelta(days=planned_ttl_days):
+                    return True, "已有未执行的计划"
+
+        if company and title:
+            target_company = _norm(company)
+            target_title = _norm(title)
+            with closing(self._connect()) as conn:
+                rows = conn.execute(
+                    "SELECT * FROM applications "
+                    "WHERE platform=? AND status IN ('sent','unknown','requires_action')",
+                    (platform,),
+                ).fetchall()
+            for candidate in rows:
+                if _norm(candidate["company"]) != target_company:
+                    continue
+                if _norm(candidate["title"]) != target_title:
+                    continue
+                when = _parse_time(
+                    candidate["sent_at"] or candidate["updated_at"] or candidate["created_at"]
+                )
+                if when is not None and when >= cutoff:
+                    return (
+                        True,
+                        f"同公司同职位 {window_days} 天内已投递："
+                        f"{candidate['company']} / {candidate['title']}",
+                    )
         return False, ""
 
     def record_planned(self, job: Job, score: int, greeting: str, run_id: str) -> None:

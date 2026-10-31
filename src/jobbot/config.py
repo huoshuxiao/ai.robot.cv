@@ -31,6 +31,7 @@ class DefaultsConfig:
     max_interval_seconds: float = 45.0
     headless: bool = False
     page_timeout_seconds: float = 30.0
+    dedupe_window_days: int = 7
 
 
 @dataclass(frozen=True)
@@ -493,6 +494,7 @@ def load_config(path: str | Path = "config/config.yaml") -> Config:
         max_interval_seconds=max_interval,
         headless=_bool(defaults_raw, "headless", "config.defaults", False),
         page_timeout_seconds=_float(defaults_raw, "page_timeout_seconds", "config.defaults", 30.0, minimum=1),
+        dedupe_window_days=_int(defaults_raw, "dedupe_window_days", "config.defaults", 7, minimum=1),
     )
     if defaults.min_score > 100:
         raise ConfigError("config.defaults.min_score 不能大于 100")

@@ -557,6 +557,64 @@ def cmd_demo(args, cfg: Config, profile: Profile) -> int:
         adapter.close()
 
 
+def cmd_simulate(args, cfg: Config, profile: Profile) -> int:
+    from .models import Job
+    from .simulation import simulate_jobs, write_simulation
+
+    path = Path(args.fixture).expanduser()
+    if not path.is_file():
+        print(f"模拟夹具不存在：{path}", file=sys.stderr)
+        return EXIT_CONFIG
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, json.JSONDecodeError) as exc:
+        print(f"模拟夹具解析失败：{exc}", file=sys.stderr)
+        return EXIT_CONFIG
+    items = data.get("jobs", []) if isinstance(data, dict) else data
+    jobs = []
+    for item in items:
+        item = dict(item)
+        item.setdefault("platform", cfg.platform("boss").name)
+        try:
+            jobs.append(Job.from_dict(item))
+        except TypeError:
+            continue
+    storage = Storage(cfg.storage.db)
+    result = simulate_jobs(
+        cfg,
+        profile,
+        storage,
+        jobs,
+        limit=args.limit,
+        window_days=args.window_days,
+    )
+    print(
+        f"模拟测试（不发送）：平台 {result['platform']}，城市 "
+        f"{'、'.join(result['cities'])}，去重窗口 {result['window_days']} 天"
+    )
+    print(
+        f"今日已投递 {result['sent_today']}，今日剩余额度 {result['day_remaining']}，"
+        f"本次模拟入选 {len(result['selected'])}，实际现在会发送 {result['would_send_now']}"
+    )
+    if result["selected"]:
+        print("\n入选（仅模拟，不会发送）：")
+        for idx, item in enumerate(result["selected"], 1):
+            job = item["job"]
+            print(
+                f"  {idx}. {item['score']}分 · {job['title']} · {job['company']} · "
+                f"{job['salary']}"
+            )
+            print(f"     招呼语：{item['greeting']}")
+    if result["skipped"]:
+        print("\n跳过：")
+        for item in result["skipped"]:
+            print(f"  - {item['title']} / {item['company']}：{item['reason']}")
+    out = write_simulation(cfg, result)
+    print(f"\n模拟报告：{out}")
+    print("未写入投递台账、未向任何平台发送消息。")
+    return EXIT_OK
+
+
 def cmd_import_extension(args, cfg: Config, profile: Profile) -> int:
     from .extension_import import import_extension_file
 
@@ -646,6 +704,16 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("import-extension", help="导入扩展发送结果到主台账")
     p.add_argument("--file", required=True, help="jobbot-auto-send-result.json")
     p.set_defaults(func=cmd_import_extension)
+
+    p = sub.add_parser("simulate", help="模拟投递（不发送、不写台账）")
+    p.add_argument(
+        "--fixture",
+        default="examples/simulation_jobs.json",
+        help="模拟职位 JSON",
+    )
+    p.add_argument("--limit", type=int, default=None)
+    p.add_argument("--window-days", type=int, default=None, help="同公司同职位去重天数")
+    p.set_defaults(func=cmd_simulate)
     return parser
 
 

@@ -78,7 +78,13 @@ class Planner:
                 continue
             seen.add(job.job_id)
 
-            duplicate, reason = self.storage.is_duplicate(pc.name, job.job_id)
+            duplicate, reason = self.storage.is_duplicate(
+                pc.name,
+                job.job_id,
+                job.company,
+                job.title,
+                self.config.defaults.dedupe_window_days,
+            )
             if duplicate:
                 skipped.append(self._skip(job, reason, 0))
                 continue
