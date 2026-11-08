@@ -145,9 +145,10 @@ class Planner:
             skipped.append(self._skip(item.job, "排名靠后，超出本次限额", item.match.score))
 
         max_greeting = self.config.ai.max_greeting_chars
+        min_greeting = self.config.ai.min_greeting_chars
         for item in selected:
             greeting = build_greeting(
-                self.ai, self.profile, item.job, item.match, max_greeting, self.log
+                self.ai, self.profile, item.job, item.match, max_greeting, self.log, min_greeting
             )
             item.greeting = greeting.text
             item.greeting_source = greeting.source

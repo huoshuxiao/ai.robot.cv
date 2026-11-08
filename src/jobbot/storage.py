@@ -110,10 +110,12 @@ class Storage:
                 updated = _parse_time(row["updated_at"])
                 if updated is not None and updated >= cutoff:
                     return True, f"状态为 {status}，需人工确认后再投（{window_days} 天内）"
-            elif status == "planned":
-                created = _parse_time(row["created_at"])
-                if created is not None and created >= now - timedelta(days=planned_ttl_days):
-                    return True, "已有未执行的计划"
+            # 2026-11-04 裁定：注释掉「planned 行 3 天内不再投」这条限制——计划过但没发出去的岗位应当还能再进计划，
+            # 只有真发出去过的（`sent`，7 日窗口）才拦。`planned_ttl_days` 参数保留是为了不改调用方形状，当前不生效。
+            # elif status == "planned":
+            #     created = _parse_time(row["created_at"])
+            #     if created is not None and created >= now - timedelta(days=planned_ttl_days):
+            #         return True, "已有未执行的计划"
 
         if company and title:
             target_company = _norm(company)

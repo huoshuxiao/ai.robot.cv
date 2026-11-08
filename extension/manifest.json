@@ -1,9 +1,12 @@
 {
   "manifest_version": 3,
   "name": "jobbot assistant",
-  "version": "0.2.0",
+  "version": "0.5.18",
   "description": "BOSS real-browser assistant for jobbot",
-  "permissions": ["storage", "downloads"],
+  "permissions": [
+    "storage",
+    "downloads"
+  ],
   "host_permissions": [
     "https://www.zhipin.com/*",
     "http://127.0.0.1:11434/*",
@@ -18,9 +21,25 @@
         "https://www.zhipin.com/web/geek/*",
         "https://www.zhipin.com/job_detail/*"
       ],
-      "js": ["profile.js", "content.js"],
-      "css": ["panel.css"],
+      "js": [
+        "profile.js",
+        "content.js"
+      ],
+      "css": [
+        "panel.css"
+      ],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.zhipin.com/web/geek/*",
+        "https://www.zhipin.com/job_detail/*"
+      ],
+      "js": [
+        "cipher.js"
+      ],
+      "run_at": "document_idle",
+      "world": "MAIN"
     }
   ]
 }

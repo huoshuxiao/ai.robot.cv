@@ -12,6 +12,7 @@ import time
 from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
+from urllib.parse import quote
 
 from .adapters import (
     AdapterError,
@@ -23,7 +24,7 @@ from .adapters import (
 )
 from .adapters.boss import LOGIN_COOKIES, load_selectors
 from .ai import AIClient
-from .browser import find_system_chromium
+from .browser import find_profile_instances, find_system_chromium
 from .config import Config, ConfigError, Profile, load_config, load_profile
 from .models import Plan
 from .planner import Planner, load_plan_file
@@ -322,6 +323,22 @@ def cmd_doctor(args, cfg: Config, profile: Profile) -> int:
     if not browser_ok:
         print("提示：运行 `playwright install chromium`，或设置 JOBBOT_CHROMIUM 指向本机 Chrome/Chromium")
 
+    pc = cfg.platform()
+    if pc.user_data_dir:
+        holders = find_profile_instances(pc.user_data_dir)
+        if holders:
+            since_min = int((datetime.now() - datetime.fromtimestamp(holders[0][1])).total_seconds() // 60)
+            print(
+                f"profile「{pc.user_data_dir}」正被 {len(holders)} 个浏览器进程占用，"
+                f"最早的起于约 {since_min} 分钟前（pid {holders[0][0]}）"
+            )
+            print(
+                "提示：改过 extension/ 之后要先关掉那个窗口再起浏览器 —— "
+                "否则 --load-extension 只是把 URL 交给旧实例，跑的还是旧代码（缺 passed 字段会一律不发）"
+            )
+        else:
+            print(f"profile 空闲，可直接起扩展浏览器：{pc.user_data_dir}")
+
     print("\n== 登录 ==")
     if args.live:
         pc = cfg.platform("boss" if "boss" in cfg.platforms else None)
@@ -442,6 +459,62 @@ def cmd_plan(args, cfg: Config, profile: Profile) -> int:
         adapter.close()
 
 
+def build_plan_url(cfg: Config, platform_name: str, run_id: str, limit: int | None = None) -> str:
+    """把配置里的搜索口径拼成扩展 auto_plan 的入口 URL；扩展侧缺省值与配置不一致时以配置为准。"""
+    pc = cfg.platform(platform_name)
+    cities = pc.search_cities
+    if not cities:
+        raise ConfigError(f"平台 {platform_name} 没有配置城市，无法生成交互入口 URL")
+    keywords = list(cfg.search.keywords)
+    if not keywords:
+        raise ConfigError("config.search.keywords 为空，无法生成交互入口 URL")
+    template = load_selectors(pc.selectors)["search_url"]
+    params = {
+        "jobbot_auto": "auto_plan",
+        "jobbot_run": run_id,
+        "jobbot_cities": ",".join(f"{c.code}:{c.name}" for c in cities),
+        "jobbot_keywords": ",".join(keywords),
+        "jobbot_limit": str(limit if limit is not None else pc.limit_per_run),
+        "jobbot_exclude": ",".join(cfg.search.exclude_keywords),
+        "jobbot_exclude_title": ",".join(cfg.search.exclude_title),
+        "jobbot_dedupe_days": str(cfg.defaults.dedupe_window_days),
+        "jobbot_title_keywords": ",".join(cfg.search.title_keywords),
+    }
+    base = template.format(query=quote(keywords[0]), city_code=cities[0].code)
+    return f"{base}#" + "&".join(f"{k}={quote(v, safe=':,')}" for k, v in params.items())
+
+
+def cmd_plan_url(args, cfg: Config, profile: Profile) -> int:
+    platform_name = cfg.platform(args.platform).name
+    run_id = args.run or f"{platform_name}{int(time.time())}"
+    url = build_plan_url(cfg, platform_name, run_id, limit=args.limit)
+    print(url)
+    if args.explain:
+        pc = cfg.platform(platform_name)
+        print(
+            "\n参数来源（改 YAML 后重跑本命令即可，不用手拼）：",
+            file=sys.stderr,
+        )
+        print(f"  jobbot_cities          ← platforms.{platform_name}.cities = "
+              f"{'、'.join(c.name for c in pc.search_cities)}", file=sys.stderr)
+        print(f"  jobbot_keywords        ← search.keywords = {'、'.join(cfg.search.keywords)}",
+              file=sys.stderr)
+        print(f"  jobbot_limit           ← platforms.{platform_name}.limit_per_run = {pc.limit_per_run}"
+              + (f"（本次被 --limit {args.limit} 覆盖）" if args.limit is not None else ""),
+              file=sys.stderr)
+        print(f"  jobbot_exclude         ← search.exclude_keywords（{len(cfg.search.exclude_keywords)} 条）",
+              file=sys.stderr)
+        print(f"  jobbot_exclude_title   ← search.exclude_title（{len(cfg.search.exclude_title)} 条）",
+              file=sys.stderr)
+        print(f"  jobbot_title_keywords  ← search.title_keywords（{len(cfg.search.title_keywords)} 条）",
+              file=sys.stderr)
+        print(f"  jobbot_dedupe_days     ← defaults.dedupe_window_days = {cfg.defaults.dedupe_window_days}",
+              file=sys.stderr)
+        print(f"  jobbot_run             ← --run 或 {platform_name}<时间戳>（同 id 会续跑旧计划，换一批就换 id）",
+              file=sys.stderr)
+    return EXIT_OK
+
+
 def cmd_apply(args, cfg: Config, profile: Profile) -> int:
     logger = logging.getLogger("jobbot")
     if not args.yes and not sys.stdin.isatty():
@@ -540,7 +613,12 @@ def cmd_demo(args, cfg: Config, profile: Profile) -> int:
         print("== 模拟投递（结果写入演示台账）==")
         code = _apply_plan(demo_cfg, storage, adapter, plan, path, True)
         duplicate_count = sum(
-            1 for job in adapter.all_jobs() if storage.is_duplicate(pc.name, job.job_id)[0]
+            # 这一行只是 demo 的复核读数，但口径必须与 planner／桥一致：
+            # 只传 job_id 会漏掉「同公司同标题」那条支路，于是印出来的 N/M 比真拦的少。
+            1 for job in adapter.all_jobs()
+            if storage.is_duplicate(
+                pc.name, job.job_id, job.company, job.title, demo_cfg.defaults.dedupe_window_days
+            )[0]
         )
         print(
             f"\n== 去重复核 ==\n"
@@ -609,6 +687,8 @@ def cmd_simulate(args, cfg: Config, profile: Profile) -> int:
         print("\n跳过：")
         for item in result["skipped"]:
             print(f"  - {item['title']} / {item['company']}：{item['reason']}")
+            for risk in item.get("risks") or []:
+                print(f"      风险：{risk}")
     out = write_simulation(cfg, result)
     print(f"\n模拟报告：{out}")
     print("未写入投递台账、未向任何平台发送消息。")
@@ -676,6 +756,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit", type=int, default=None, help="本次最多入选数量")
     p.add_argument("--fixture", default=None, help="离线职位 JSON（演示/测试）")
     p.set_defaults(func=cmd_plan)
+
+    p = sub.add_parser(
+        "plan-url",
+        help="按配置生成浏览器扩展 auto_plan 的入口 URL（打印到 stdout，不联网不发送）",
+    )
+    p.add_argument("--platform", default=None)
+    p.add_argument("--limit", type=int, default=None, help="覆盖 platforms.<平台>.limit_per_run")
+    p.add_argument("--run", default=None, help="指定 jobbot_run（默认 <平台><时间戳>；同 id 会续跑旧计划）")
+    p.add_argument("--explain", action="store_true", help="stderr 打印每个参数的配置来源")
+    p.set_defaults(func=cmd_plan_url)
 
     p = sub.add_parser("apply", help="执行计划（默认逐条确认）")
     p.add_argument("--plan", required=True, help="计划文件路径或 run_id")

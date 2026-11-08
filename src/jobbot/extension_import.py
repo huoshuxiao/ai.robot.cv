@@ -74,6 +74,9 @@ def import_extension_results(
         elif status in ("unconfirmed", "unknown"):
             storage.mark_status(platform, job.job_id, "unknown", error or "extension: unconfirmed")
             counts["unknown"] += 1
+        elif status == "skipped":
+            storage.mark_status(platform, job.job_id, "skipped", error or "extension: skipped")
+            counts["skipped"] += 1
         else:
             storage.mark_status(platform, job.job_id, "failed", error or f"extension status: {status}")
             counts["failed"] += 1

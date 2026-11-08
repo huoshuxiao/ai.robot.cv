@@ -32,7 +32,7 @@ def simulate_jobs(
     seen: set[str] = set()
     batch_keys: set[tuple[str, str]] = set()
 
-    def skip(job: Job, reason: str, score: int = 0) -> None:
+    def skip(job: Job, reason: str, score: int = 0, risks: list[str] | None = None) -> None:
         skipped.append(
             {
                 "job_id": job.job_id,
@@ -40,6 +40,7 @@ def simulate_jobs(
                 "company": job.company,
                 "score": score,
                 "reason": reason,
+                "risks": list(risks or []),
             }
         )
 
@@ -64,12 +65,11 @@ def simulate_jobs(
         city = str(job.raw.get("search_city") or pc.city)
         match = score_job(job, profile, cfg.search, city)
         if match.skipped or match.score < cfg.defaults.min_score:
-            reason = (
-                match.reasons[0]
-                if match.skipped and match.reasons
-                else f"得分 {match.score} 低于阈值 {cfg.defaults.min_score}"
-            )
-            skip(job, reason, match.score)
+            if match.skipped:
+                reason = match.reasons[0] if match.reasons else "命中排除条件"
+            else:
+                reason = f"得分 {match.score} 低于阈值 {cfg.defaults.min_score}"
+            skip(job, reason, match.score, match.risks)
             continue
 
         batch_keys.add(key)

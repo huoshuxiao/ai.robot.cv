@@ -14,6 +14,7 @@ STATUS_LABELS = {
     "failed": "失败",
     "unknown": "待确认",
     "requires_action": "需人工",
+    "skipped": "已拦下（未发送）",
 }
 
 
@@ -121,6 +122,7 @@ def write_daily_report(
         f"- 待确认：{counts.get('unknown', 0)}",
         f"- 需人工：{counts.get('requires_action', 0)}",
         f"- 失败：{counts.get('failed', 0)}",
+        f"- 已拦下：{counts.get('skipped', 0)}",
         "",
         "| 状态 | 分数 | 职位 | 公司 | 薪资 | 更新时间 |",
         "| --- | --- | --- | --- | --- | --- |",
@@ -133,7 +135,7 @@ def write_daily_report(
     if not rows:
         lines.append("| - | - | 今日暂无记录 | - | - | - |")
 
-    details = [row for row in rows if row["status"] in ("sent", "unknown", "requires_action")]
+    details = [row for row in rows if row["status"] in ("sent", "unknown", "requires_action", "skipped")]
     if details:
         lines.extend(["", "## 明细", ""])
         for idx, row in enumerate(details, 1):
@@ -155,6 +157,6 @@ def write_daily_report(
 def format_counts(counts: dict[str, int]) -> str:
     if not counts:
         return "暂无记录"
-    order = ["sent", "planned", "unknown", "requires_action", "failed"]
+    order = ["sent", "planned", "unknown", "requires_action", "skipped", "failed"]
     parts = [f"{STATUS_LABELS.get(k, k)} {counts[k]}" for k in order if counts.get(k)]
     return "，".join(parts) if parts else "暂无记录"

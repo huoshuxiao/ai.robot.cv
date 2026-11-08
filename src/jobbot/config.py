@@ -20,6 +20,8 @@ class StorageConfig:
     plans_dir: Path
     reports_dir: Path
     debug_dir: Path
+    # 桥每次判定追加一行，平台跑时即使标签页被 BOSS 弄掉也能事后对账。
+    verdicts: Path = Path("data/verdicts.jsonl")
 
 
 @dataclass(frozen=True)
@@ -41,6 +43,13 @@ class SearchConfig:
     salary_range_k: tuple[int, int]
     max_pages: int = 5
     job_types: tuple[str, ...] = ("全职",)
+    salary_floor_k: int | None = None
+    salary_floor_non_local_k: int | None = None
+    local_city: str = "大连"
+    exclude_title: tuple[str, ...] = ("大模型", "算法", "AI")
+    title_keywords: tuple[str, ...] = ("Java", "后端", "服务端")
+    # `exclude_keywords` 的子集：只有列在这里的词才**额外**匹配职位正文（工作地/身份/岗位类，正文里出现即无歧义）
+    exclude_keywords_in_jd: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -56,6 +65,9 @@ class AIProviderConfig:
     num_ctx: int = 4096
     thinking_budget: int = 512
     think: bool = False
+    # 非空则整段替换默认系统提示词：不同模型适合的提示词不一样（实测见 CHANGELOG）
+    score_prompt: str = ""
+    greeting_prompt: str = ""
 
 
 def _default_ai_providers() -> dict[str, AIProviderConfig]:
@@ -75,9 +87,11 @@ def _default_ai_providers() -> dict[str, AIProviderConfig]:
 class AIConfig:
     enabled: bool = True
     provider: str = "online"
+    scoring_provider: str | None = None
     fallback: str | None = None
     providers: dict[str, AIProviderConfig] = field(default_factory=_default_ai_providers)
     max_greeting_chars: int = 120
+    min_greeting_chars: int = 30
     use_for_scoring: bool = True
 
     def provider_config(self, name: str | None = None) -> AIProviderConfig:
@@ -85,6 +99,13 @@ class AIConfig:
         if target not in self.providers:
             raise ConfigError(f"未知 AI provider：{target}；已配置：{', '.join(self.providers) or '无'}")
         return self.providers[target]
+
+    @property
+    def scoring_provider_name(self) -> str:
+        return self.scoring_provider or self.provider
+
+    def scoring_provider_config(self) -> AIProviderConfig:
+        return self.provider_config(self.scoring_provider_name)
 
     @property
     def selected_provider(self) -> AIProviderConfig:
@@ -138,6 +159,8 @@ class Profile:
     experiences: tuple[dict[str, Any], ...]
     greeting_style: str
     raw: dict[str, Any]
+    # 简历补充.md「## 劣势」：年龄 / 学历 / 外语三类硬短板，评分与招呼语据此收敛。
+    weaknesses: tuple[str, ...] = field(default_factory=tuple)
 
     @property
     def all_skills(self) -> tuple[str, ...]:
@@ -266,6 +289,11 @@ def load_profile(path: Path) -> Profile:
         for x in _list(data.get("experiences", []), "profile.experiences")
     )
     education = _mapping(data.get("education", {}), "profile.education")
+    weaknesses = tuple(
+        str(x).strip()
+        for x in _list(data.get("weaknesses", []), "profile.weaknesses")
+        if str(x).strip()
+    )
     return Profile(
         name=data["name"].strip(),
         gender=str(data.get("gender", "")),
@@ -283,6 +311,7 @@ def load_profile(path: Path) -> Profile:
         experiences=experiences,
         greeting_style=str(data.get("greeting_style", "")).strip(),
         raw=data,
+        weaknesses=weaknesses,
     )
 
 
@@ -302,6 +331,15 @@ def _parse_search(data: dict[str, Any]) -> SearchConfig:
     if salary[0] > salary[1]:
         raise ConfigError("config.search.salary_range_k 下限不能大于上限")
     pages = _int(raw, "max_pages", "config.search", default=5, minimum=1)
+    floor_raw = raw.get("salary_floor_k")
+    salary_floor_k = None if floor_raw is None else _int(
+        raw, "salary_floor_k", "config.search", default=salary[0], minimum=1
+    )
+    non_local_raw = raw.get("salary_floor_non_local_k")
+    salary_floor_non_local_k = None if non_local_raw is None else _int(
+        raw, "salary_floor_non_local_k", "config.search", default=25, minimum=1
+    )
+    local_city = str(raw.get("local_city", "大连")).strip() or "大连"
     job_types = tuple(
         str(x).strip()
         for x in _list(raw.get("job_types", ["全职"]), "config.search.job_types")
@@ -313,6 +351,30 @@ def _parse_search(data: dict[str, Any]) -> SearchConfig:
         salary_range_k=(int(salary[0]), int(salary[1])),
         max_pages=pages,
         job_types=job_types,
+        salary_floor_k=salary_floor_k,
+        salary_floor_non_local_k=salary_floor_non_local_k,
+        local_city=local_city,
+        exclude_title=tuple(
+            str(x).strip()
+            for x in _list(
+                raw.get("exclude_title", ["大模型", "算法", "AI"]), "config.search.exclude_title"
+            )
+            if str(x).strip()
+        ),
+        title_keywords=tuple(
+            str(x).strip()
+            for x in _list(
+                raw.get("title_keywords", ["Java", "后端", "服务端"]), "config.search.title_keywords"
+            )
+            if str(x).strip()
+        ),
+        exclude_keywords_in_jd=tuple(
+            str(x).strip()
+            for x in _list(
+                raw.get("exclude_keywords_in_jd", []), "config.search.exclude_keywords_in_jd"
+            )
+            if str(x).strip()
+        ),
     )
 
 
@@ -323,7 +385,7 @@ def _parse_ai_provider(name: str, value: Any) -> AIProviderConfig:
     if kind not in ("ollama", "openai"):
         raise ConfigError(f"{label}.type 只支持 ollama/openai")
     default_base = "http://127.0.0.1:11434" if kind == "ollama" else "https://api.openai.com/v1"
-    default_model = "deepseek-r1:8b" if kind == "ollama" else "gpt-4o-mini"
+    default_model = "qwen2.5:7b" if kind == "ollama" else "gpt-4o-mini"
     base_url = _str(raw, "base_url", label, default_base).rstrip("/")
     model = _str(raw, "model", label, default_model)
     key_env = str(raw.get("api_key_env", "")).strip()
@@ -343,12 +405,19 @@ def _parse_ai_provider(name: str, value: Any) -> AIProviderConfig:
         num_ctx=_int(raw, "num_ctx", label, 4096, minimum=512),
         thinking_budget=_int(raw, "thinking_budget", label, 512, minimum=0),
         think=_bool(raw, "think", label, False),
+        score_prompt=str(raw.get("score_prompt", "")).strip(),
+        greeting_prompt=str(raw.get("greeting_prompt", "")).strip(),
     )
 
 
 def _parse_ai(data: dict[str, Any]) -> AIConfig:
     raw = _mapping(data.get("ai", {}), "config.ai")
     max_greeting = _int(raw, "max_greeting_chars", "config.ai", default=120, minimum=20)
+    min_greeting = _int(raw, "min_greeting_chars", "config.ai", default=30, minimum=10)
+    if min_greeting >= max_greeting:
+        raise ConfigError(
+            f"config.ai.min_greeting_chars（{min_greeting}）必须小于 max_greeting_chars（{max_greeting}）"
+        )
     enabled = _bool(raw, "enabled", "config.ai", True)
     use_for_scoring = _bool(raw, "use_for_scoring", "config.ai", True)
 
@@ -405,12 +474,29 @@ def _parse_ai(data: dict[str, Any]) -> AIConfig:
         if fallback == provider:
             fallback = None
 
+    scoring_value = raw.get("scoring_provider")
+    scoring_provider: str | None = None
+    if scoring_value not in (None, "", False):
+        scoring_provider = str(scoring_value).strip()
+        if scoring_provider not in providers:
+            raise ConfigError(
+                f"config.ai.scoring_provider={scoring_provider} 未找到；已配置：{', '.join(providers)}"
+            )
+        if not providers[scoring_provider].enabled:
+            raise ConfigError(
+                f"config.ai.scoring_provider={scoring_provider} 已在配置中关闭（enabled: false）"
+            )
+        if scoring_provider == provider:
+            scoring_provider = None
+
     return AIConfig(
         enabled=enabled,
         provider=provider,
+        scoring_provider=scoring_provider,
         fallback=fallback,
         providers=providers,
         max_greeting_chars=max_greeting,
+        min_greeting_chars=min_greeting,
         use_for_scoring=use_for_scoring,
     )
 
@@ -479,6 +565,7 @@ def load_config(path: str | Path = "config/config.yaml") -> Config:
         plans_dir=_resolve(root, str(storage_raw.get("plans_dir", "data/plans"))),
         reports_dir=_resolve(root, str(storage_raw.get("reports_dir", "data/reports"))),
         debug_dir=_resolve(root, str(storage_raw.get("debug_dir", "data/debug"))),
+        verdicts=_resolve(root, str(storage_raw.get("verdicts", "data/verdicts.jsonl"))),
     )
 
     defaults_raw = _mapping(data.get("defaults", {}), "config.defaults")

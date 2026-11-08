@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-STATUSES = ("planned", "sent", "failed", "unknown", "requires_action")
+STATUSES = ("planned", "sent", "failed", "unknown", "requires_action", "skipped")
 
 
 @dataclass
@@ -13,6 +13,7 @@ class Job:
     title: str
     company: str = ""
     salary: str = ""
+    salary_raw: str = ""
     location: str = ""
     url: str = ""
     description: str = ""
