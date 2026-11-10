@@ -280,8 +280,6 @@ def score_job(job: Job, profile: Profile, search: SearchConfig, city: str) -> Ma
         # 标题这一档不需要 JD：标题一直在手上，取不取得到正文都判得了。
         risks.append(f"岗位标题「{job.title}」与目标方向偏差较大")
         hard_block.append(f"岗位标题「{job.title}」既不含目标方向词也不是工程师序列 ⇒ 硬拦，不投递")
-    for detail in reversed(hard_block):
-        reasons.insert(0, detail)
     if any(k in title_lower for k in ("架构师", "技术经理", "项目经理", "负责人", "组长")):
         risks.append("标题偏管理/架构，可能要求更高或偏管理职责")
 
@@ -343,7 +341,9 @@ def score_job(job: Job, profile: Profile, search: SearchConfig, city: str) -> Ma
         score += 8
         reasons.append(f"工作地点在{city}（+8）")
     elif location:
-        risks.append(f"工作地点「{location}」与目标城市「{city}」不一致")
+        detail = f"工作地点「{location}」不在目标城市「{city}」"
+        risks.append(detail)
+        hard_block.append(f"{detail} ⇒ 硬拦，不投递")
 
     if len(job.description) >= 50:
         score += 3
@@ -360,16 +360,23 @@ def score_job(job: Job, profile: Profile, search: SearchConfig, city: str) -> Ma
         hit = find_hard_requirement(jd_text, EDUCATION_CONFLICT_RES)
         if hit:
             score -= EDUCATION_PENALTY
-            risks.append(f"岗位要求「{hit}」，候选人为非全日制且无学位证（劣势：学历，-{EDUCATION_PENALTY}）")
+            detail = f"岗位要求「{hit}」，候选人为非全日制且无学位证（劣势：学历）"
+            risks.append(f"{detail}，-{EDUCATION_PENALTY}")
+            hard_block.append(f"{detail} ⇒ 硬拦，不投递")
     if "language" in axes:
         hit = find_hard_requirement(jd_text, LANGUAGE_CONFLICT_RES)
         if hit:
             score -= LANGUAGE_PENALTY
-            risks.append(f"岗位要求「{hit}」，候选人外语仅可读写（劣势：外语，-{LANGUAGE_PENALTY}）")
+            detail = f"岗位要求「{hit}」，候选人外语仅可读写（劣势：外语）"
+            risks.append(f"{detail}，-{LANGUAGE_PENALTY}")
+            hard_block.append(f"{detail} ⇒ 硬拦，不投递")
 
     score = max(0, min(100, score))
     if hard_block:
         # 分数一路照算到这里才拦：台账/报表看得见「这条差多少」，而不是一行 0 分。
+        # 所有硬拦明细（技能/标题/工作地/学历/外语）统一在此 prepend 进 reasons。
+        for detail in reversed(hard_block):
+            reasons.insert(0, detail)
         return MatchResult(
             score=score,
             reasons=reasons,

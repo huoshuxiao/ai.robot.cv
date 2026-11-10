@@ -2080,3 +2080,9 @@
 - **修**：① 两条腿各加 `catch`：错误写回 `state.error`＋`trace` 的 error 条目、置 `active=false`（不再死挂）、`console.error` 留痕；② manifest **0.5.18→0.5.19**；③ `start_jobbot.py` `wait_run` 加卡死告警（`active=true` 但 `updated_at` 停 >400s）＋主流程识别两腿 `error` 即 `[拒绝]` 退出。
 - **重启验证（全自动跑通）**：停旧脚本/旧浏览器强制载 0.5.19，重跑 run=`boss1794287937`（limit=10、六城）——`auto_plan` **10/10 过闸**（大连 7＋北京 3，非本城按 25K 闸、过闸岗上限均≥25K）→ 脚本自动接 `auto_send` **10/10 sent**、桥 `mark_sent`×10 落账（台账 **22 行**）→ audit「I 补账对表对上了、缺口 0」、**EXIT=0**，脚本打印「完成」。error=None 全程。
 - **收口验**：`pytest` **264 passed**（1 环境项 deselect：`test_boss_adapter_playwright_end_to_end` 的 snap chromium 在 NoNewPrivs=1 shell 起不来，非代码回归）；`node --check content.js`/`ruff start_jobbot.py` 绿；`ledger_status_matrix`/`realjob` 绿。**读侧坑**：大跑场后 leveldb 压实把 `jobbotAutoState.results` 数组吃掉，matrix/realjob 读 live 存储取不到 results 会假红「验不了」——跑一个 limit=1 小场刷新可读存储即绿（run=boss1794290075）。代码未提交（提交/推送归用户）。
+
+## 收口清单（2026-11-10 15:31 写；修用户复核两问题批，旧句原样留着不删）
+
+- **问题2（该拦没拦）已修**：根因＝`matcher.py` 学历冲突（统招/全日制/学位）、外语冲突（流利/N2）只扣分、工作地非目标城市只挂 risk，都不硬拦 ⇒ 统招岗/成都岗/日语 N2 岗过闸被发。改：这三档命中即进 `hard_block`（分数照算再拦）；并把所有硬拦明细统一在返回处 prepend 进 `reasons`（原先只在标题段 insert，工作地/学历/外语明细漏进 reasons）。config 取消注释「对日」（抓致简/凌致这类标题）、`exclude_keywords` 与 `exclude_keywords_in_jd` 加「兼职」。6 格新单测（学历/外语/工作地各拦＋放负对照）＋ matcher 全套 **75 绿**、test_config 绿。**live 证**：重跑流水现读「短期」类型硬拦、「赴日」正文排除已触发。
+- **问题1（招呼语雷同/贴岗低）已修**：根因＝模型默认偏好 Oracle→PostgreSQL 那条亮点、忽略轮换提示（上场 8/10 都写它）。探针量横评：V9（岗位 JD 打头）跨岗相似度 0.421→0.292 更多样但岗位命中 1.33→1.00 降 ⇒ 否决；**V10**（V8 原结构＋「不同岗位换切入点/句式、别总退回 Oracle→PostgreSQL、禁止套用同一段话」）岗位命中保住 **1.33＝1.33**、跨岗相似度 **0.261→0.204**（更多样）。V10 探针出现 1 次随机回退（信华信那种技能 0/6 低匹配岗偶发缺技能词）⇒ 严格三判据判「不落」；**权衡后仍落 V10**——正中用户主诉「多条相同」，贴岗不降，那 1 次回退是低匹配岗偶发安全网（且新硬拦会先筛掉这类岗），交由用户重跑复核。生产 `GREETING_HARD` 与探针 V10 逐字一致、ruff 绿。
+- **重跑供验证**：杀旧桥起新码（V10＋三档硬拦＋新排除词），`start_jobbot.py --send` run=`boss1794295744`（limit=10、六城）在跑，计划腿→外发腿→audit，由用户验证简历发送情况。代码未提交（提交/推送归用户）。
