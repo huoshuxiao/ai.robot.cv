@@ -2072,3 +2072,11 @@
 - **live 验证**：`./start_jobbot.py --limit 1 --timeout 600` 实跑 run=`boss1794155811`——复用桥/看门狗、六城搜索、致简科技 score=68 过闸、默认未外发、audit EXIT=0。编排全链路成立。`--send` 腿已实现但本批**未点火**（外发归用户点名；其机制与 earlier run9 手动 auto_send 3/3 sent 同源）。
 - **AGENTS.md 标题改名同步**：用户把「### 数量」改为「### 发送简历的数量」，撞红两处写死旧标题——`tests/test_config.py:29` 与 `agents_md_teeth.py:111` 的 `_goal_section(..., "### 数量")` 同步到新标题；test_config 34 绿、agents_md_teeth 7 格判红 0。
 - **收口验**：`RULER_BATTERY=0`（45 支、95s、判红 0）、`ruff check start_jobbot.py` 0、`py_compile` 过。README §2 加「一键启动」用法。代码未提交（提交/推送归用户）。
+
+## 收口清单（2026-11-10 14:05 写；监控修复一键 --send 卡死批，旧句原样留着不删）
+
+- **问题**：用户跑 `start_jobbot.py --send` 卡死——`jobbotAutoState` 写一条 entry trace（页=/web/geek/jobs 卡=0）后再无动静，桥零请求、`active=true` 永久挂起。dump 抓页证实搜索页其实有 **15 个真职位卡**（非登录墙）。
+- **根因**：`autoPlan`/`autoSendInit` 只有 `try/finally`、**无 catch**——异常静默杀死循环（finally 仅复位 autoRunning），状态留 `active=true` 死挂，读侧看不出任何错。
+- **修**：① 两条腿各加 `catch`：错误写回 `state.error`＋`trace` 的 error 条目、置 `active=false`（不再死挂）、`console.error` 留痕；② manifest **0.5.18→0.5.19**；③ `start_jobbot.py` `wait_run` 加卡死告警（`active=true` 但 `updated_at` 停 >400s）＋主流程识别两腿 `error` 即 `[拒绝]` 退出。
+- **重启验证（全自动跑通）**：停旧脚本/旧浏览器强制载 0.5.19，重跑 run=`boss1794287937`（limit=10、六城）——`auto_plan` **10/10 过闸**（大连 7＋北京 3，非本城按 25K 闸、过闸岗上限均≥25K）→ 脚本自动接 `auto_send` **10/10 sent**、桥 `mark_sent`×10 落账（台账 **22 行**）→ audit「I 补账对表对上了、缺口 0」、**EXIT=0**，脚本打印「完成」。error=None 全程。
+- **收口验**：`pytest` **264 passed**（1 环境项 deselect：`test_boss_adapter_playwright_end_to_end` 的 snap chromium 在 NoNewPrivs=1 shell 起不来，非代码回归）；`node --check content.js`/`ruff start_jobbot.py` 绿；`ledger_status_matrix`/`realjob` 绿。**读侧坑**：大跑场后 leveldb 压实把 `jobbotAutoState.results` 数组吃掉，matrix/realjob 读 live 存储取不到 results 会假红「验不了」——跑一个 limit=1 小场刷新可读存储即绿（run=boss1794290075）。代码未提交（提交/推送归用户）。

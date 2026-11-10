@@ -1053,10 +1053,11 @@
   async function autoPlan(params) {
     if (autoRunning) return;
     autoRunning = true;
+    let state = null;
     try {
       const runId = params.get("jobbot_run") || String(Date.now());
       const stored = await chrome.storage.local.get(AUTO_KEY);
-      let state = stored[AUTO_KEY];
+      state = stored[AUTO_KEY];
       if (!state || state.run !== runId) {
         const cities = parseCities(params.get("jobbot_cities"));
         const keywords = parseList(params.get("jobbot_keywords"));
@@ -1351,6 +1352,16 @@
         await saveAuto(state);
       }
       await advanceAutoPlan(state);
+    } catch (err) {
+      const msg = String((err && err.message) || err);
+      if (state) {
+        state.error = msg;
+        state.active = false;
+        traceStep(state, "error", `${msg} @ ${((err && err.stack) || "").split("\n")[1] || ""}`);
+        await saveAuto(state);
+      }
+      setStatus(`自动计划出错：${msg}`);
+      console.error("[jobbot] autoPlan", err);
     } finally {
       autoRunning = false;
     }
@@ -1540,30 +1551,42 @@
   }
 
   async function autoSendInit(params) {
-    const run = params.get("jobbot_run") || "";
-    const stored = await chrome.storage.local.get([AUTO_SEND_KEY, AUTO_KEY]);
-    let state = stored[AUTO_SEND_KEY];
-    if (!state || state.run !== run) {
-      const results = (stored[AUTO_KEY] && stored[AUTO_KEY].results) || [];
-      if (!results.length) {
-        setStatus("没有自动计划结果，请先运行 auto_plan");
+    let state = null;
+    try {
+      const run = params.get("jobbot_run") || "";
+      const stored = await chrome.storage.local.get([AUTO_SEND_KEY, AUTO_KEY]);
+      state = stored[AUTO_SEND_KEY];
+      if (!state || state.run !== run) {
+        const results = (stored[AUTO_KEY] && stored[AUTO_KEY].results) || [];
+        if (!results.length) {
+          setStatus("没有自动计划结果，请先运行 auto_plan");
+          return;
+        }
+        state = {
+          run: run || stored[AUTO_KEY].run,
+          active: true,
+          index: 0,
+          jobs: results,
+          records: [],
+          currentJobId: null,
+        };
+        await saveAutoSend(state);
+      }
+      if (!state.active) {
+        setStatus("自动发送已完成");
         return;
       }
-      state = {
-        run: run || stored[AUTO_KEY].run,
-        active: true,
-        index: 0,
-        jobs: results,
-        records: [],
-        currentJobId: null,
-      };
-      await saveAutoSend(state);
+      await autoSendCurrent(state);
+    } catch (err) {
+      const msg = String((err && err.message) || err);
+      if (state) {
+        state.error = msg;
+        state.active = false;
+        await saveAutoSend(state);
+      }
+      setStatus(`自动发送出错：${msg}`);
+      console.error("[jobbot] autoSendInit", err);
     }
-    if (!state.active) {
-      setStatus("自动发送已完成");
-      return;
-    }
-    await autoSendCurrent(state);
   }
 
   async function savePreview(state) {

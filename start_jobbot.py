@@ -137,12 +137,25 @@ def wait_run(key: str, run_id: str, timeout: int) -> dict | None:
     """轮询扩展存储，直到该 run 出现且 active=False（收官）。run_id 唯一，旧态不会误匹配。"""
     deadline = time.monotonic() + timeout
     seen = False
+    stall_warned = False
     while time.monotonic() < deadline:
-        got, _note, _full = ar.read_state(key, ("run", "active", "phase", "results", "records"))
+        got, _note, _full = ar.read_state(
+            key, ("run", "active", "phase", "results", "records", "updated_at", "error"))
         if isinstance(got, dict) and got.get("run") == run_id:
             seen = True
             if got.get("active") is False:
                 return got
+            ua = got.get("updated_at") or ""
+            if ua and not stall_warned:
+                try:
+                    import datetime
+                    t = datetime.datetime.fromisoformat(ua.replace("Z", "+00:00")).timestamp()
+                    if time.time() - t > 400:
+                        log(f"[卡死告警] {key} active=true 但心跳停了 >400s（updated_at={ua}）；"
+                            "扩展可能静默出错，去看存储 trace 的 error 条目")
+                        stall_warned = True
+                except ValueError:
+                    pass
         time.sleep(5)
     log(f"等 {key} run={run_id} 超时（{timeout}s，seen={seen}）")
     return None
@@ -196,6 +209,9 @@ def main() -> int:
     st = wait_run("jobbotAutoState", run_id, args.timeout)
     if st is None:
         return 5
+    if st.get("error"):
+        log(f"[拒绝] auto_plan 出错：{st['error']}（详见存储 trace 的 error 条目）")
+        return 5
     results = st.get("results") or []
     passed = [r for r in results if r.get("passed")]
     log(f"auto_plan 收官：results={len(results)}，过闸={len(passed)}")
@@ -213,6 +229,9 @@ def main() -> int:
             launch_browser(surl, profile_dir)
             ss = wait_run("jobbotAutoSendState", run_id, args.timeout)
             if ss is None:
+                return 5
+            if ss.get("error"):
+                log(f"[拒绝] auto_send 出错：{ss['error']}")
                 return 5
             recs = ss.get("records") or []
             sent = sum(1 for r in recs if r.get("status") == "sent")
