@@ -135,13 +135,15 @@ def profile_facts(profile: Profile) -> str:
         education_text = f"{education_text}（{note}）"
     languages = "；".join(str(x) for x in profile.raw.get("languages", []))
     weaknesses = "；".join(profile.weaknesses)
+    # 项目语料（用户提供，原文照投；用于精排与招呼语时不得夸大、不得编造）
+    projects = "；".join(str(x) for x in profile.raw.get("projects", []))
     return (
         f"姓名：{profile.name}；年龄：{profile.age}；城市：{profile.location}；"
         f"从业年限：{profile.years_experience} 年；目标岗位：{profile.target_title}；"
         f"期望薪资：{profile.expected_salary_k[0]}-{profile.expected_salary_k[1]}K；"
         f"技能：{skills}；经历：{experiences}；亮点：{highlights}；"
         f"学历：{education_text}；语言：{languages}；"
-        f"劣势：{weaknesses or '未标注'}；简介：{profile.summary}"
+        f"劣势：{weaknesses or '未标注'}；项目：{projects or '未标注'}；简介：{profile.summary}"
     )
 
 

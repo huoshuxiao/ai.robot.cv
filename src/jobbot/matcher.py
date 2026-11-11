@@ -133,15 +133,28 @@ LANGUAGE_CONFLICT_RES = (
     re.compile(r"(?:英语|日语|外语)[^。；;]{0,10}(?:口语|会话|听说|工作语言|电话会议|邮件沟通)"),
     re.compile(r"(?:口语|听说)[^。；;]{0,8}(?:流利|熟练|无障碍|作为工作语言)"),
     re.compile(r"(?:英语|日语)(?:n1|n2|一级|二级|专八|雅思|托福)"),
+    # 11-11：标题「英语可沟通」这类——职务名直接写沟通要求（候选人听说不流利）。紧贴「英语/日语」，
+    # 中间不放任意字（防「英语培训、沟通能力」这种福利+中文沟通被误伤）；只认沟通/交流/读写/书写的硬说法。
+    re.compile(r"(?:英语|日语)\s*(?:可沟通|能沟通|沟通|交流|可交流|读写|书写)"),
 )
+# 软化词只在**命中所在小句**内才算软化：按这些标点切小句（含括号/顿号），跨标点不再串味。
+_CLAUSE_DELIMS = "，。；;、（）()！？\n"
 
 
 def find_hard_requirement(text: str, patterns: Iterable[re.Pattern]) -> str:
-    """返回第一条「硬要求」命中的原文小片段；没有命中返回空串。"""
+    """返回第一条「硬要求」命中的原文小片段；没有命中返回空串。
+
+    软化词（优先/可接受/不限/放宽/无学位）只在**命中所在小句**内才算软化。原先用 ±12 字窗口，
+    会把隔壁括号里的「（口语可沟通者优先）」的「优先」误当软化，吞掉同句「英语读写流利」的硬要求
+    （11-11 平台真实漏发）。现在按标点切小句，跨标点不再串味。
+    """
     for pattern in patterns:
         for match in pattern.finditer(text):
-            window = text[max(0, match.start() - 12) : match.end() + 12]
-            if _SOFTENING_RE.search(window):
+            seg_start = max((text.rfind(d, 0, match.start()) for d in _CLAUSE_DELIMS), default=-1)
+            ends = [text.find(d, match.end()) for d in _CLAUSE_DELIMS]
+            seg_end = min([x for x in ends if x != -1], default=len(text))
+            clause = text[seg_start + 1 : seg_end]
+            if _SOFTENING_RE.search(clause):
                 continue
             return match.group(0)
     return ""

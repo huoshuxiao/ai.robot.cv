@@ -169,6 +169,27 @@ def auto_send_url(results: list, run_id: str) -> str | None:
     return None
 
 
+def cleanup_downloads() -> None:
+    """收腿：删掉扩展下载到 ~/Downloads 的本工具产物（jobbot-auto-plan*.json / jobbot-auto-send-result*.json）。
+    只删 `jobbot-*.json` 前缀的文件，绝不碰用户其它下载；删不掉的逐个报出来、不抛。"""
+    dl = Path.home() / "Downloads"
+    if not dl.is_dir():
+        log("收腿：~/Downloads 不存在，跳过")
+        return
+    victims = sorted(dl.glob("jobbot-*.json"))
+    if not victims:
+        log("收腿：~/Downloads 没有 jobbot 下载文件")
+        return
+    removed: list[str] = []
+    for f in victims:
+        try:
+            f.unlink()
+            removed.append(f.name)
+        except OSError as exc:
+            log(f"收腿：删不掉 {f.name}（{exc}）")
+    log(f"收腿：已删除 {len(removed)} 个发送用文件（jobbot-*.json）：{'、'.join(removed) or '无'}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="一键启动自动化AI找工作（桥+看门狗+扩展浏览器+auto_plan/可选auto_send）")
     ap.add_argument("--config", default="config/config.yaml")
@@ -177,6 +198,7 @@ def main() -> int:
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--timeout", type=int, default=5400, help="每条腿等收官秒数（默认5400=90分钟）")
     ap.add_argument("--no-watchdog", action="store_true", help="不起存储看门狗")
+    ap.add_argument("--no-cleanup", action="store_true", help="跑完不清理 ~/Downloads 里的 jobbot 下载文件")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
@@ -246,6 +268,8 @@ def main() -> int:
         if any(t in line for t in ("已见到证据", "未见证据", "判不了", "判定汇总")):
             print("  " + line.strip(), flush=True)
     log(f"完成 run={run_id}（audit EXIT={proc.returncode}）")
+    if not args.no_cleanup:
+        cleanup_downloads()
     return 0
 
 
