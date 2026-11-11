@@ -2,13 +2,16 @@
 """一键启动自动化AI找工作。
 
 把分散的启动步骤整合成一个脚本：本地 AI 桥 → 存储看门狗 → 带扩展的浏览器 → auto_plan
-（搜索/评分/生成招呼语），可选 auto_send（合规后自动发送招呼）→ 收口对账。
+（搜索/评分/生成招呼语），可选 auto_send（合规后自动发送招呼）→ 收口对账 → **收尾两件**：
+刷新当天日报（`reports/`，重复跑＝覆写同一份；auto_plan/auto_send 那两条腿超时或报错时**也刷**，
+  因为 `/mark_sent` 是当场落账的——腿没收住不等于没发出去）＋清理 ~/Downloads 的本工具产物。
 
 用法：
   .venv/bin/python start_jobbot.py                 # 只搜索+生成计划，不外发（默认安全）
   .venv/bin/python start_jobbot.py --send          # 计划完成后自动发送招呼（外发！慎用）
   .venv/bin/python start_jobbot.py --limit 5 --send
   .venv/bin/python start_jobbot.py --no-watchdog --timeout 1800
+  .venv/bin/python start_jobbot.py --no-report      # 不刷当天日报（收腿照做）
 
 前置：登录态需先 `.venv/bin/jobbot login`（扫码）。配置在 config/config.yaml。
 默认不发送；只有显式 --send 才走 auto_send 外发腿。浏览器若已开着旧实例，会提示先关。
@@ -190,6 +193,30 @@ def cleanup_downloads() -> None:
     log(f"收腿：已删除 {len(removed)} 个发送用文件（jobbot-*.json）：{'、'.join(removed) or '无'}")
 
 
+def refresh_report(cfg) -> None:
+    """收尾二：把当天的日报刷一遍（"全部"＋当天真出现过的那个平台各一份）。
+
+    为什么能连着跑多次：`write_daily_report` 是整文件覆写、不是追加 ⇒ 同一天里第 N 次跑只会把
+    当天那几份刷新到最新台账，不会把行叠两遍、也不会越跑越多份文件。
+    为什么不能因为它把整场失败：外发在这一步之前已经发生完了，日报只是把台账读出来排版；
+    所以这里的异常只报一行并给出手动补的命令，不改退出码。
+    """
+    from datetime import date
+
+    from jobbot.reporter import format_counts, refresh_daily_reports
+    from jobbot.storage import Storage
+
+    try:
+        wrote = refresh_daily_reports(Storage(cfg.storage.db), cfg.storage.reports_dir, date.today())
+    except Exception as exc:
+        log(f"[日报没刷成] {type(exc).__name__}: {exc}"
+            "（不影响本场结论，手动补：.venv/bin/jobbot report）")
+        return
+    for idx, (path, counts) in enumerate(wrote):
+        档 = "全部" if idx == 0 else path.stem.split("-")[-1]
+        log(f"日报刷新（{档}）→ {path}｜{format_counts(counts)}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="一键启动自动化AI找工作（桥+看门狗+扩展浏览器+auto_plan/可选auto_send）")
     ap.add_argument("--config", default="config/config.yaml")
@@ -199,6 +226,7 @@ def main() -> int:
     ap.add_argument("--timeout", type=int, default=5400, help="每条腿等收官秒数（默认5400=90分钟）")
     ap.add_argument("--no-watchdog", action="store_true", help="不起存储看门狗")
     ap.add_argument("--no-cleanup", action="store_true", help="跑完不清理 ~/Downloads 里的 jobbot 下载文件")
+    ap.add_argument("--no-report", action="store_true", help="跑完不刷新当天日报（默认刷新，重复跑＝覆写同一份）")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
@@ -230,9 +258,15 @@ def main() -> int:
 
     st = wait_run("jobbotAutoState", run_id, args.timeout)
     if st is None:
+        # 腿起过了却没收官＝台账里可能已经有几条 `sent`（`/mark_sent` 是当场落账的），
+        # 日报不能停在上一场：刷完再退，退出码照旧是 5。
+        if not args.no_report:
+            refresh_report(cfg)
         return 5
     if st.get("error"):
         log(f"[拒绝] auto_plan 出错：{st['error']}（详见存储 trace 的 error 条目）")
+        if not args.no_report:
+            refresh_report(cfg)
         return 5
     results = st.get("results") or []
     passed = [r for r in results if r.get("passed")]
@@ -251,9 +285,13 @@ def main() -> int:
             launch_browser(surl, profile_dir)
             ss = wait_run("jobbotAutoSendState", run_id, args.timeout)
             if ss is None:
+                if not args.no_report:
+                    refresh_report(cfg)   # 发送腿超时＝可能已经发出去几条，日报更该刷
                 return 5
             if ss.get("error"):
                 log(f"[拒绝] auto_send 出错：{ss['error']}")
+                if not args.no_report:
+                    refresh_report(cfg)
                 return 5
             recs = ss.get("records") or []
             sent = sum(1 for r in recs if r.get("status") == "sent")
@@ -268,6 +306,8 @@ def main() -> int:
         if any(t in line for t in ("已见到证据", "未见证据", "判不了", "判定汇总")):
             print("  " + line.strip(), flush=True)
     log(f"完成 run={run_id}（audit EXIT={proc.returncode}）")
+    if not args.no_report:
+        refresh_report(cfg)
     if not args.no_cleanup:
         cleanup_downloads()
     return 0

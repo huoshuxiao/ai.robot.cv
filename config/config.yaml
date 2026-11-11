@@ -9,7 +9,7 @@ profile: config/profile.yaml
 storage:
   db: data/jobbot.sqlite3
   plans_dir: data/plans
-  reports_dir: data/reports
+  reports_dir: reports              # 与 data/ 同级；日报是给人看的产物，不埋在运行数据里
   debug_dir: data/debug
 
 defaults:

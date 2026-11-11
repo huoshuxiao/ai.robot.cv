@@ -159,6 +159,9 @@ def make_mark_sent(cfg: Config, payload: dict[str, Any], logger=None) -> dict[st
             score=int(payload.get("score") or 0),
             greeting=str(payload.get("greeting") or ""),
             run_id=str(payload.get("run") or "extension"),
+            # 台账里的地区只用扩展真传的那一枚；`job.location` 在没传时是评分兜底的「大连」，
+            # 写进台账就成了"把北京记成大连"（日报的地区列正是从这里取的）。
+            area=str((payload.get("job") or {}).get("area") or payload.get("area") or "").strip(),
         )
         store.mark_sent("boss", job.job_id, str(payload.get("evidence") or "extension:auto_send")[:500])
         counts = store.status_counts("boss")

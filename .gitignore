@@ -222,6 +222,11 @@ __marimo__/
 # jobbot runtime data (ledger, plans, reports, browser profile, debug dumps)
 data/
 
+# 日报已从 data/reports/ 挪到与 data/ 同级的 reports/，但**默认仍不进版本库**：
+# 里面是公司名＋招呼语原文，一旦提交就很难收回（推出去更难收回）。
+# 想把日报纳入版本管理就删掉下面这一行（这是选择，不是遗漏）。
+reports/
+
 src/jobbot/__init__.py
 
 src/jobbot/__main__.py

@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS applications (
     title      TEXT NOT NULL DEFAULT '',
     company    TEXT NOT NULL DEFAULT '',
     salary     TEXT NOT NULL DEFAULT '',
+    area       TEXT NOT NULL DEFAULT '',
     url        TEXT NOT NULL DEFAULT '',
     score      INTEGER NOT NULL DEFAULT 0,
     greeting   TEXT NOT NULL DEFAULT '',
@@ -42,11 +43,13 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 """
 
+# 加列只走这一张表：`_migrate()` 对着 `PRAGMA table_info` 逐枚补，老库新库都得到同一个形状。
+# 新列一律带 DEFAULT ''，否则往已有行上加 NOT NULL 列会当场把 `Storage()` 打崩（起不来比少一列糟）。
+NEW_COLUMNS: dict[str, str] = {"area": "TEXT NOT NULL DEFAULT ''"}
+
 
 def now_local() -> datetime:
     return datetime.now().astimezone()
-
-
 def iso(dt: datetime) -> str:
     return dt.isoformat(timespec="seconds")
 
@@ -73,7 +76,22 @@ class Storage:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._connect()) as conn:
             conn.executescript(SCHEMA)
+            self._migrate(conn)
             conn.commit()
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """老库补新列：`CREATE TABLE IF NOT EXISTS` 对已存在的表不生效，新列不补就永远是"没有这一格"。
+
+        这里的失败要抛出来，不要吞：日报读不到 `area` 与"这一场没写地区"在磁盘上会长得一模一样。
+        """
+        have = {row["name"] for row in conn.execute("PRAGMA table_info(applications)")}
+        for column in NEW_COLUMNS:
+            if column not in have:
+                conn.execute(
+                    f"ALTER TABLE applications ADD COLUMN {column} {NEW_COLUMNS[column]}"
+                )
+        conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.path), timeout=30)
@@ -142,19 +160,28 @@ class Storage:
                     )
         return False, ""
 
-    def record_planned(self, job: Job, score: int, greeting: str, run_id: str) -> None:
+    def record_planned(self, job: Job, score: int, greeting: str, run_id: str,
+                       area: str | None = None) -> None:
+        """写/更新台账行。`area` 缺省时用 `job.location`。
+
+        为什么要单独收一枚：`job_from_payload` 在扩展没带 `area` 时把 location 兜成「大连」——
+        那是**评分**的兜底，拿去当台账事实就会把北京/上海的岗记成大连。
+        补账那条路因此显式传 payload 里的原值（没传＝空＝日报念「未记地区」）。
+        """
         ts = iso(now_local())
+        地区 = (job.location if area is None else area).strip()
         with closing(self._connect()) as conn:
             conn.execute(
                 """
                 INSERT INTO applications
-                    (platform, job_id, title, company, salary, url, score, greeting,
+                    (platform, job_id, title, company, salary, area, url, score, greeting,
                      status, error, run_id, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'planned', '', ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned', '', ?, ?, ?)
                 ON CONFLICT(platform, job_id) DO UPDATE SET
                     title=excluded.title,
                     company=excluded.company,
                     salary=excluded.salary,
+                    area=excluded.area,
                     url=excluded.url,
                     score=excluded.score,
                     greeting=excluded.greeting,
@@ -171,6 +198,7 @@ class Storage:
                     job.title,
                     job.company,
                     job.salary,
+                    地区,
                     job.url,
                     score,
                     greeting,
@@ -180,6 +208,47 @@ class Storage:
                 ),
             )
             conn.commit()
+
+    def areas_missing(self) -> int:
+        with closing(self._connect()) as conn:
+            return int(conn.execute(
+                "SELECT COUNT(*) FROM applications WHERE COALESCE(area,'')=''"
+            ).fetchone()[0])
+
+    def backfill_areas(self, mapping: dict[str, str]) -> tuple[int, int]:
+        """按 `job_id → 地区` 把台账里**空着的那一格**填上，返回 (写入行数, 映射里没有的行数)。
+
+        只填空、不改写已有值：新岗的 `area` 由扩展当场传上来，比事后回推更可信；
+        这一条只负责把"加列之前那批历史行"补齐，否则日报会把它们整批念成「未记地区」。
+        键只按 `job_id`（流水里没有平台这一格）——BOSS 的 id 本身就带平台特征，
+        真接第二个平台时要把键换成 `(platform, job_id)`，这里不假装已经做到。
+        """
+        written = 0
+        missing = 0
+        with closing(self._connect()) as conn:
+            空行 = conn.execute(
+                "SELECT platform, job_id FROM applications WHERE COALESCE(area,'')=''"
+            ).fetchall()
+            for row in 空行:
+                地区 = mapping.get(str(row["job_id"]))
+                if not 地区:
+                    missing += 1
+                    continue
+                conn.execute(
+                    "UPDATE applications SET area=? WHERE platform=? AND job_id=?",
+                    (str(地区), row["platform"], row["job_id"]),
+                )
+                written += 1
+            conn.commit()
+        return written, missing
+
+    def missing_area_rows(self) -> list[tuple[str, str, str]]:
+        """还空着地区的那几行 `(job_id, 公司, 职位)`——点名出来，不许折成"填不上＝没问题"。"""
+        with closing(self._connect()) as conn:
+            return [(str(r["job_id"]), str(r["company"]), str(r["title"])) for r in conn.execute(
+                "SELECT job_id, company, title FROM applications "
+                "WHERE COALESCE(area,'')='' ORDER BY company, title"
+            ).fetchall()]
 
     def mark_sent(self, platform: str, job_id: str, evidence: str = "") -> None:
         ts = iso(now_local())

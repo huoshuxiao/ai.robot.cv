@@ -62,7 +62,7 @@ jobbot plan
 # 4) 审阅计划后执行：默认逐条确认，加 --yes 跳过确认
 jobbot apply --plan <计划文件> --yes
 
-# 5) 查看日报
+# 5) 查看日报（写 reports/jobbot-report-<日期>-all.md；一键脚本跑完会自动刷这一步）
 jobbot report
 ```
 
@@ -89,7 +89,8 @@ jobbot run --yes
 | `jobbot plan [--limit N]` | 搜索并生成投递计划（只读，不发送） |
 | `jobbot apply --plan <文件或 run_id> [--yes]` | 执行计划；默认逐条确认，`--yes` 全部发送 |
 | `jobbot run [--yes]` | `plan` + `apply` 一条命令 |
-| `jobbot report [--date YYYY-MM-DD]` | 输出当日台账并写 Markdown 日报 |
+| `jobbot report [--date YYYY-MM-DD] [--platform boss]` | 输出当日台账并写 Markdown 日报；不带 `--platform` 时刷「全部」＋当天真出现过的每个平台各一份（同一天重复跑＝覆写同一批文件） |
+| `jobbot backfill-area` | 用判定流水 `data/verdicts.jsonl` 里扩展传上来的 `area` 回推台账空着的地区；只填空、不改已有值，填不上的逐条点名 |
 | `jobbot demo` | 用 `examples/sample_jobs.json` 离线跑通全流程 |
 | `jobbot bridge --port 8765` | 浏览器扩展的本地 AI 桥 |
 | `jobbot plan-url [--limit N] [--run ID] [--explain]` | 按 `config.yaml` 现值拼出扩展 `auto_plan` 的入口 URL（打印一行，不联网、不发送） |
@@ -282,7 +283,7 @@ stdout 那一整行就是入口 URL（含 `jobbot_cities` / `jobbot_keywords` / 
 - **限速与限额**：随机 20-45 秒间隔，单次与每日双限额，默认 3 份。
 - **不绕过验证**：检测到验证码/风控即停机并保存现场。
 - **不伪造经历**：AI 只改写措辞，不新增简历中不存在的事实。
-- **隐私本地化**：台账、计划、日报、浏览器数据都在 `data/`（已 gitignore），不上传第三方。
+- **隐私本地化**：台账、计划、浏览器数据在 `data/`，日报在 `reports/`，两者都在 `.gitignore` 里，不上传第三方。
 - **结果不确定时保守处理**：点击发送后未确认到气泡，记为 `unknown` 并 7 天内阻止重复投递，提示人工核对。
 - **合规提示**：自动化操作可能违反招聘平台用户协议并带来账号风控风险。请低频、本人使用，并自行确认平台条款。
 
@@ -293,15 +294,16 @@ config/          config.yaml / profile.yaml / selectors.boss.yaml
 src/jobbot/      源码（CLI、匹配、AI、平台适配器、台账、报告、bridge）
 extension/       Chromium 扩展（BOSS 真实投递路径）
 examples/        离线演示职位数据
-tests/           126 个 pytest 用例（含 Playwright 浏览器级联调、AI HTTP 回环、登录 Cookie 检测、扩展结果导入、模拟投递）
+tests/           289 个 pytest 用例（含 Playwright 浏览器级联调、AI HTTP 回环、登录 Cookie 检测、扩展结果导入、模拟投递）
 docs/            设计方案.md
 data/            运行时数据（已忽略）
-  jobbot.sqlite3   投递台账（去重、状态、每日计数）
+  jobbot.sqlite3   投递台账（去重、状态、每日计数、地区）
   plans/           投递计划与结果 JSON
-  reports/         Markdown 日报
   browser/boss/    浏览器登录态（含 Cookie，注意隐私）
   debug/           选择器失效/风控现场截图与 HTML
   demo-*/          离线演示产物
+reports/         Markdown 日报（与 data/ 同级；同样已 gitignore——里面是公司名与招呼语原文，
+                 想让日报进版本库就删掉 .gitignore 里 `reports/` 那一行）
 ```
 
 ## 9. 验证状态

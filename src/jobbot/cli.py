@@ -29,7 +29,12 @@ from .config import Config, ConfigError, Profile, load_config, load_profile
 from .models import Plan
 from .planner import Planner, load_plan_file
 from .ratelimit import RateLimiter
-from .reporter import format_counts, format_plan, write_daily_report
+from .reporter import (
+    format_counts,
+    format_plan,
+    refresh_daily_reports,
+    write_daily_report,
+)
 from .storage import Storage, iso, now_local
 
 EXIT_OK = 0
@@ -568,9 +573,55 @@ def cmd_report(args, cfg: Config, profile: Profile) -> int:
         return EXIT_CONFIG
     platform = cfg.platform(args.platform).name if args.platform else None
     storage = Storage(cfg.storage.db)
-    path, counts = write_daily_report(storage, cfg.storage.reports_dir, day, platform)
-    print(f"{day.isoformat()} 台账：{format_counts(counts)}")
-    print(f"日报：{path}")
+    # 不带 `--platform` 时把"全部"与当天真出现过的每个平台各刷一遍：
+    # 只刷其中一份会让另一份停在旧内容上，而文件名里的日期读的人默认它就是那天最新的事实。
+    if platform:
+        wrote = [write_daily_report(storage, cfg.storage.reports_dir, day, platform)]
+    else:
+        wrote = refresh_daily_reports(storage, cfg.storage.reports_dir, day)
+    for path, counts in wrote:
+        print(f"{day.isoformat()} 台账：{format_counts(counts)}")
+        print(f"日报：{path}")
+    return EXIT_OK
+
+
+def _area_map(cfg: Config) -> dict[str, str]:
+    """从判定流水 `data/verdicts.jsonl` 回推 `job_id → 地区`（扩展每条判定都带了 `area` 原文）。
+
+    这是给"加列之前那批历史行"用的**唯一可信来源**：地区不许由城市配置或公司名猜出来。
+    """
+    mapping: dict[str, str] = {}
+    流水 = cfg.storage.verdicts
+    if not 流水.exists():
+        return mapping
+    for line in 流水.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        job_id, area = str(row.get("job_id") or ""), str(row.get("area") or "").strip()
+        if job_id and area:
+            mapping[job_id] = area
+    return mapping
+
+
+def cmd_backfill_area(args, cfg: Config, profile: Profile) -> int:
+    storage = Storage(cfg.storage.db)
+    mapping = _area_map(cfg)
+    待填 = storage.areas_missing()
+    written, missing = storage.backfill_areas(mapping)
+    print(f"流水可回推的地区={len(mapping)} 条｜台账空地区={待填} 行｜本次填上={written} 行｜"
+          f"流水里也找不到={missing} 行（这些继续念「未记地区」，不猜）")
+    if missing:
+        print("  填不上的那些：", file=sys.stderr)
+        for job_id, company, title in storage.missing_area_rows():
+            print(f"    {company} / {title}（job_id={job_id}）", file=sys.stderr)
+    if written:
+        for path, _counts in refresh_daily_reports(storage, cfg.storage.reports_dir, date.today()):
+            print(f"日报刷新：{path}")
     return EXIT_OK
 
 
@@ -783,6 +834,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--date", default=None, help="YYYY-MM-DD，默认今天")
     p.add_argument("--platform", default=None)
     p.set_defaults(func=cmd_report)
+
+    p = sub.add_parser(
+        "backfill-area",
+        help="用判定流水回推台账里空着的地区（只填空、不改已有值），并刷新当天日报",
+    )
+    p.set_defaults(func=cmd_backfill_area)
 
     p = sub.add_parser("demo", help="离线跑通全流水线（不联网）")
     p.set_defaults(func=cmd_demo)

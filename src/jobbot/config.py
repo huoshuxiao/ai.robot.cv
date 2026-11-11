@@ -563,7 +563,7 @@ def load_config(path: str | Path = "config/config.yaml") -> Config:
     storage = StorageConfig(
         db=_resolve(root, str(storage_raw.get("db", "data/jobbot.sqlite3"))),
         plans_dir=_resolve(root, str(storage_raw.get("plans_dir", "data/plans"))),
-        reports_dir=_resolve(root, str(storage_raw.get("reports_dir", "data/reports"))),
+        reports_dir=_resolve(root, str(storage_raw.get("reports_dir", "reports"))),
         debug_dir=_resolve(root, str(storage_raw.get("debug_dir", "data/debug"))),
         verdicts=_resolve(root, str(storage_raw.get("verdicts", "data/verdicts.jsonl"))),
     )

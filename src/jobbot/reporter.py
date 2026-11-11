@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import sqlite3
 import unicodedata
 from collections import Counter
+from contextlib import closing
 from datetime import date
 from pathlib import Path
 
@@ -56,6 +58,25 @@ def _skip_category(reason: str) -> str:
     if "重复" in reason:
         return "重复"
     return "低分/其他"
+
+
+def _area_cell(row) -> str:
+    """表格里那一格地区。
+
+    老库的 `area` 是迁移补出来的空串——不许折成"没地区"就完事，要念成**这一条没记到地区**，
+    否则"扩展没传 area"与"这条岗真没有地区"在报告里长一个样。
+    """
+    try:
+        value = str(row["area"] or "").strip()
+    except (IndexError, KeyError):
+        return "未记地区"
+    return value or "未记地区"
+
+
+def _city_of(area: str) -> str:
+    """`大连·甘井子区·七贤岭` 取到城市那一层，用来做分地区小结。"""
+    head = str(area or "").split("·", 1)[0].strip()
+    return head or "未记地区"
 
 
 def format_plan(plan: Plan) -> str:
@@ -113,10 +134,20 @@ def write_daily_report(
     suffix = platform or "all"
     path = reports_dir / f"jobbot-report-{day.isoformat()}-{suffix}.md"
 
+    平台集 = sorted({str(row["platform"]) for row in rows})
+    地区计 = Counter(_city_of(_area_cell(row)) for row in rows)
+    if 平台集:
+        平台行 = platform or f"全部（当天出现过 {len(平台集)} 个：{'、'.join(平台集)}）"
+    else:
+        平台行 = platform or "全部（当天无记录）"
     lines = [
         f"# 投递日报 {day.isoformat()}",
         "",
-        f"- 平台：{platform or '全部'}",
+        f"- 平台：{平台行}",
+    ]
+    if 地区计:
+        lines.append(f"- 地区：{'、'.join(f'{name} {count}' for name, count in 地区计.most_common())}")
+    lines.extend([
         f"- 已投递：{counts.get('sent', 0)}",
         f"- 待投递：{counts.get('planned', 0)}",
         f"- 待确认：{counts.get('unknown', 0)}",
@@ -124,16 +155,25 @@ def write_daily_report(
         f"- 失败：{counts.get('failed', 0)}",
         f"- 已拦下：{counts.get('skipped', 0)}",
         "",
-        "| 状态 | 分数 | 职位 | 公司 | 薪资 | 更新时间 |",
-        "| --- | --- | --- | --- | --- | --- |",
-    ]
+    ])
+    if len(平台集) > 1:
+        平台计 = Counter(str(row["platform"]) for row in rows)
+        投了 = Counter(str(row["platform"]) for row in rows if row["status"] == "sent")
+        lines.append("分平台：" + "，".join(
+            f"{name} 共 {平台计[name]}（已投递 {投了.get(name, 0)}）" for name in 平台集))
+        lines.append("")
+    lines.extend([
+        "| 平台 | 地区 | 状态 | 分数 | 职位 | 公司 | 薪资 | 更新时间 |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    ])
     for row in rows:
         lines.append(
-            f"| {STATUS_LABELS.get(row['status'], row['status'])} | {row['score']} | "
+            f"| {row['platform']} | {_area_cell(row)} | "
+            f"{STATUS_LABELS.get(row['status'], row['status'])} | {row['score']} | "
             f"{row['title']} | {row['company']} | {row['salary']} | {row['updated_at']} |"
         )
     if not rows:
-        lines.append("| - | - | 今日暂无记录 | - | - | - |")
+        lines.append("| - | - | - | - | 今日暂无记录 | - | - | - |")
 
     details = [row for row in rows if row["status"] in ("sent", "unknown", "requires_action", "skipped")]
     if details:
@@ -141,6 +181,7 @@ def write_daily_report(
         for idx, row in enumerate(details, 1):
             lines.append(f"### {idx}. {row['title']} · {row['company']}")
             lines.append("")
+            lines.append(f"- 平台：{row['platform']}　地区：{_area_cell(row)}")
             lines.append(f"- 状态：{STATUS_LABELS.get(row['status'], row['status'])}")
             lines.append(f"- 分数：{row['score']}")
             lines.append(f"- 链接：{row['url']}")
@@ -152,6 +193,30 @@ def write_daily_report(
 
     path.write_text("\n".join(lines), encoding="utf-8")
     return path, dict(counts)
+
+
+def refresh_daily_reports(
+    storage: Storage,
+    reports_dir: Path,
+    day: date,
+) -> list[tuple[Path, dict[str, int]]]:
+    """把这一天的日报全部重算一遍：先写"全部"那一份，再按当天真实出现过的平台各写一份。
+
+    为什么不是"只写当天那一个平台"：同一天里跑过 BOSS 又跑过别的平台时，只重写其中一份
+    会让另一份留在旧内容上——日报的名字里带日期，读的人默认它就是那天最新的事实。
+    幂等：整文件覆写（不是追加），同一台机器上连着跑多次 `start_jobbot.py` 只会把当天那几份刷新，
+    不会越跑越多份、也不会把行叠两遍。
+    """
+    wrote = [write_daily_report(storage, reports_dir, day, None)]
+    with closing(sqlite3.connect(str(storage.path), timeout=30)) as conn:
+        平台们 = [str(r[0]) for r in conn.execute(
+            "SELECT DISTINCT platform FROM applications "
+            "WHERE substr(COALESCE(sent_at, created_at), 1, 10)=? ORDER BY platform",
+            (day.isoformat(),),
+        ).fetchall()]
+    for name in 平台们:
+        wrote.append(write_daily_report(storage, reports_dir, day, name))
+    return wrote
 
 
 def format_counts(counts: dict[str, int]) -> str:
