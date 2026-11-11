@@ -355,7 +355,9 @@ def score_job(job: Job, profile: Profile, search: SearchConfig, city: str) -> Ma
         age_cap = parse_age_cap(job.tags, job.description)
         if age_cap is not None and age_cap < profile.age:
             score -= AGE_PENALTY
-            risks.append(f"岗位年龄上限 {age_cap} 岁，候选人 {profile.age} 岁（劣势：年龄，-{AGE_PENALTY}）")
+            detail = f"岗位年龄上限 {age_cap} 岁，候选人 {profile.age} 岁（劣势：年龄）"
+            risks.append(f"{detail}，-{AGE_PENALTY}")
+            hard_block.append(f"{detail} ⇒ 硬拦，不投递")
     if "education" in axes:
         hit = find_hard_requirement(jd_text, EDUCATION_CONFLICT_RES)
         if hit:
@@ -394,14 +396,14 @@ def score_job(job: Job, profile: Profile, search: SearchConfig, city: str) -> Ma
     )
 
 
-RULE_WEIGHT = 0.6
-AI_WEIGHT = 0.4
+RULE_WEIGHT = 0.4
+AI_WEIGHT = 0.6
 
 
 def merge_ai_score(rule_score: int, ai_score: int) -> int:
-    """合并分 = 规则分 × 60% + AI 精排分 × 40%（0-100 截断后取整）。
+    """合并分 = 规则分 × 40% + AI 精排分 × 60%（0-100 截断后取整）。
 
-    2026-11-03 由 70/30 调成 60/40：让精排多分 10 个百分点的话语权。
+    2026-11-10 由 60/40 调成 40/60：把排序话语权交给 AI 精排（用户裁定「排序交给 AI」）。
     """
     merged = round(rule_score * RULE_WEIGHT + max(0, min(100, ai_score)) * AI_WEIGHT)
     return max(0, min(100, merged))

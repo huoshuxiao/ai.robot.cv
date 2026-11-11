@@ -175,7 +175,7 @@ def main() -> int:
     ap.add_argument("--send", action="store_true", help="计划完成后自动发送招呼（外发！默认只计划不发送）")
     ap.add_argument("--limit", type=int, default=None, help="覆盖本次入选数量")
     ap.add_argument("--port", type=int, default=8765)
-    ap.add_argument("--timeout", type=int, default=1800, help="每条腿等收官的秒数")
+    ap.add_argument("--timeout", type=int, default=5400, help="每条腿等收官秒数（默认5400=90分钟）")
     ap.add_argument("--no-watchdog", action="store_true", help="不起存储看门狗")
     args = ap.parse_args()
 

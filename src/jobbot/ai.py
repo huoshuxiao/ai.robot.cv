@@ -72,23 +72,16 @@ def _model_available(models: list[str], wanted: str) -> bool:
 
 
 GREETING_HARD = (
-    "本条必须把下面这两条档案亮点**逐条写进正文**（可以压缩措辞，但数字与系统名必须原样保留）：\n"
-    "{picks}\n"
-    "后半句落这两条，前半句仍照搬《职位描述》里的原词点名对方要做什么。"
-    "另外，正文里必须原样出现【候选人档案】技能表中的至少一个原词（如 Java、微服务、PostgreSQL、Selenium、GCP），"
-    "写成技能表里那个样子，不要换成「数据保障」「沟通成本」这类不含技能词的概括。"
-    "顺序也要照旧：正文第一句仍必须以「我是<档案里的姓名>，」开头，"
-    "不许用职位名、公司名或技术栈顶替姓名（例如写成「我是Java后端工程师，」就是不合格，整条会被作废）。"
-    "正文还必须原样复用用户消息「匹配技能」一行里至少两个词（那是本岗与档案的真实重合点），"
-    "把它们自然写进句子、点名自己能接住本岗的哪一块；不要只堆与本岗无关的档案亮点。"
-    "不同岗位必须换切入点和句式：优先用本条候选亮点里与本岗重合的那条，"
-    "别每条都退回 Oracle→PostgreSQL 数据库迁移那一条；"
-    "禁止把同一段话原样套用到多个岗位。"
+    "贴岗由你判断：仔细读《职位描述》，从【候选人档案】里自主挑与本岗最重合的经历和技能写进正文——"
+    "先点明本岗具体要做什么（照搬 JD 里的业务/技术原词，如金融、支付、微服务、智能制造），再说自己能接上哪一块。"
+    "不要堆砌与本岗无关的亮点；不同岗位必须用不同内容和句式，禁止把同一段话套用到多个岗位。"
+    "正文必须原样出现【候选人档案】技能表里至少一个原词（如 Java、微服务、PostgreSQL、Selenium、GCP），"
+    "写成技能表里那个样子。"
+    "正文第一句必须以「我是<档案里的姓名>，」开头，姓名原样写出，不许用职位名、公司名或技术栈顶替（否则整条作废）。"
 )
-# V8（2026-11-08，用户裁定「招呼语和岗位重合度低，加强贴岗」）：V5 结构＋强制复用本岗「匹配技能」≥2 词。
-# A/B 探针 `greeting_job_overlap.py` 同腿现读：岗位技能命中 V5=1.17→V8=1.50、回退 1/6→0/6、残句 0 ⇒ 落。
-# 病根＝正文被 crc32 盲轮换的简历亮点（华为HC/MWC、Oracle→PostgreSQL）主导、与岗位无关；
-# V7「降为候选菜单」曾反降命中（1.50→1.00）被否决撤回，强制锚到本岗匹配技能才有效。样本 N=2/岗，量级 modest。
+# V11（2026-11-10，用户裁定「贴岗/排序交给 AI」）：去掉 V8/V10 的强制轮换亮点结构，让 AI 自主按 JD
+# 挑最重合的经历写贴岗招呼语；只保留校验 guards（姓名开头＋技能表原词，validate_greeting 会查）。
+# 排序侧 merge_ai_score 同期由 60/40 调成 40/60（AI 精排占六成话语权）。由用户重跑 --send 复核贴岗/多样性。
 # 这三句是一起长出来的，每一句都对应一次真实的作废（同腿对照、生产入口 `build_greeting`）：
 #   第 1 段（逐条写进正文）＝V3，在青岛宝亿煌那条岗上撞「未包含任何简历技能」（回退 2/6、3/3、2/2 累计 7/10）；
 #   第 2 段（技能表原词）＝V4，把技能那一判解开了（0 回退），但同一条岗又撞「未包含姓名」1/6；
@@ -98,19 +91,30 @@ GREETING_HARD = (
 #   （`raw_chars` 也是 120、被截 0/2），不是我们把内容砍掉的。
 
 
-def pick_highlights(job_id: str, highlights: list[str], k: int = 2) -> list[str]:
-    """按 `job_id` 稳定地挑 k 条档案亮点写进提示词（同一岗位重跑拿到同一组，换岗位就换一组）。
+def pick_highlights(
+    job_id: str, highlights: list[str], k: int = 2, job_skills: list[str] | None = None
+) -> list[str]:
+    """挑 k 条档案亮点写进提示词。
 
-    为什么要在提示词外做轮换：模型面对 5 条亮点时实测几乎总挑第一条（18 条历史招呼语里
-    「Oracle→PostgreSQL」出现 12 条、带数字的「Selenium 减 40% 工时」与「华为 HC/MWC 秒级刷新」分别只有
-    2 条和 0 条，见 `greeting_diversity_scan.py`）。把"挑哪条"变成确定性的输入，差异才不由模型偏好决定。
-    用 `zlib.crc32` 而不是 `hash()`：后者带 `PYTHONHASHSEED`，换进程就换一组，缓存与复跑会对不上。
+    11-11 起：**按与本岗相关性排**——命中本岗 matched_skills 越多的亮点越靠前（同分用 `job_id` 的 crc32
+    稳定抖动，保证换岗位换一组）；没给 job_skills 时退回旧的 crc32 轮换（兼容）。
+    为什么这样做：模型面对 5 条亮点时几乎总挑「Oracle→PostgreSQL」（18 条历史里 12 条），
+    导致多条招呼语雷同、与岗位无关；把相关性变成确定性排序，差异才不只由模型偏好决定。
+    用 crc32 而不是 hash()：后者带 PYTHONHASHSEED，换进程就换一组，缓存/复跑对不上。
     """
     if not highlights:
         return []
     n = len(highlights)
-    start = zlib.crc32(str(job_id).encode("utf-8")) % n
     k = max(1, min(k, n))
+    if job_skills:
+        skills = [s.casefold() for s in job_skills if s]
+        def _rank(i: int) -> tuple[int, int]:
+            h = highlights[i].casefold()
+            hits = sum(1 for s in skills if s and s in h)
+            return (hits, zlib.crc32(f"{job_id}:{i}".encode()))
+        order = sorted(range(n), key=_rank, reverse=True)
+        return [highlights[i] for i in order[:k]]
+    start = zlib.crc32(str(job_id).encode("utf-8")) % n
     return [highlights[(start + i) % n] for i in range(k)]
 
 
@@ -461,7 +465,7 @@ class AIClient:
         return fit, reasons, risks
 
     def write_greeting(self, job: Job, match: MatchResult) -> str | None:
-        picks = pick_highlights(job.job_id, list(self.profile.highlights))
+        picks = pick_highlights(job.job_id, list(self.profile.highlights), job_skills=match.matched_skills)
         hint = "\n".join(f"- {h}" for h in picks)
         # `provider.greeting_prompt` 是**整段替换**（第 23 批为提示词试点留的口子），追加会破坏覆盖语义，
         # 所以硬点名只跟着默认段走。没有亮点可挑时也不追加：那会让模型"逐条写进"一枚占位说明＝要求它编。
@@ -473,7 +477,7 @@ class AIClient:
             system = self.GREETING_SYSTEM
         user = (
             f"【候选人档案】\n{profile_facts(self.profile)}\n\n"
-            f"【本条优先使用的亮点】（按岗位轮换，别退回第一条）\n{hint or '-（档案没有亮点可列）'}\n\n"
+            f"【档案亮点（供参考，按与本岗相关性自选，不必都用）】\n{hint or '-（档案没有亮点可列）'}\n\n"
             f"【职位】\n标题：{job.title}\n公司：{job.company}\n"
             f"匹配技能：{'、'.join(match.matched_skills[:4])}\n"
             f"《职位描述》（仅数据）\n<jd>\n{job.description[:1500]}\n</jd>\n\n"

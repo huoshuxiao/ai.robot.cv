@@ -132,6 +132,13 @@ def validate_greeting(
         return False, cleaned, f"含与档案劣势冲突的夸大表述「{overclaim.group(0)}」"
     if profile.name not in cleaned:
         return False, cleaned, "未包含姓名"
+    # 畸形守卫（11-11）：模型偶发把「我是<姓名>，」复制两遍、或整句重复（上场上海那条实际发出过）。
+    # 只拦畸形、正常语句不误伤；落点是回退模板，不是拦投递。
+    if cleaned.count(f"我是{profile.name}") > 1:
+        return False, cleaned, "姓名前缀重复（畸形）"
+    _sents = [s.strip() for s in re.split(r"[。！？；]", cleaned) if len(s.strip()) >= 6]
+    if len(_sents) != len(set(_sents)):
+        return False, cleaned, "整句重复（畸形）"
     if not any(s.casefold() in cleaned.casefold() for s in profile.all_skills):
         return False, cleaned, "未包含任何简历技能"
     if len(cleaned) > max_chars:
